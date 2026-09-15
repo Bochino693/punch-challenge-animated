@@ -52,6 +52,7 @@ godot --headless --path . --editor --quit
 godot --headless --path . --script tests/test_core.gd
 godot --headless --path . --script tests/test_show_flow.gd
 godot --headless --path . --script tests/test_serial_teimoso.gd
+godot --headless --path . --script tests/test_arena.gd
 sh tools/conferir_ponte.sh
 ```
 

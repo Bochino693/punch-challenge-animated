@@ -31,6 +31,7 @@ func _initialize() -> void:
 		{"nome": "03_espera", "fn": _espera},
 		{"nome": "04_carga", "fn": _carga},
 		{"nome": "05_impacto", "fn": _impacto},
+		{"nome": "05b_nocaute", "fn": _nocaute},
 		{"nome": "06_contando", "fn": _contando},
 		{"nome": "07_lendario", "fn": _lendario},
 		{"nome": "08_forte", "fn": _forte},
@@ -96,19 +97,56 @@ func _contagem() -> void:
 func _espera() -> void:
 	_preparar(GameDef.State.ARMED)
 	jogo.espera_left = 60.0
-	jogo.carga_tempo = -1.0
 	jogo.moldura.set_estado(LedFrame.ARMADA)
+	_arena_intacta()
+	if jogo.arena != null:
+		jogo.arena.guardar(true)
+
+## A ARENA NÃO ENTRA SOZINHA NAS CAPTURAS.
+##
+## Estas telas são montadas à mão, colocando o jogo direto no estado que
+## se quer fotografar — elas não passam por `_registrar_impacto`, que é
+## quem manda o soco para o lutador. Sem os dois auxiliares abaixo, todas
+## as capturas de resultado sairiam com o adversário intacto e de pé, o
+## que esconderia justamente o que há de novo para conferir.
+func _arena_intacta() -> void:
+	jogo.arena_frase = ""
+	jogo.arena_nocaute = false
+	if jogo.arena != null:
+		jogo.arena.preparar()
+
+func _arena_levou(pontos: int) -> void:
+	_arena_intacta()
+	var nivel := ScoreTier.de(pontos)
+	jogo.arena_frase = ArenaFrases.de_golpe(str(nivel["id"]), 2)
+	if jogo.arena != null:
+		jogo.arena.guardar(false)
+		var reacao: Dictionary = jogo.arena.golpe(
+			float(pontos) / float(GameDef.SCORE_MAX), float(nivel["hitstop"]) > 0.0
+		)
+		if bool(reacao["nocaute"]):
+			jogo.arena_frase = ArenaFrases.de_nocaute(2)
 
 func _carga() -> void:
 	_preparar(GameDef.State.ARMED)
 	jogo.espera_left = 55.0
-	jogo.carga_tempo = 0.9
+	jogo.espera_left = 55.0
 
 func _impacto() -> void:
-	jogo.carga_tempo = -1.0
 	_preparar(GameDef.State.MEASURING)
 	jogo.state_time = 0.25
 	jogo.result_score = 9034
+	_arena_levou(9034)
+
+## O NOCAUTE PRECISA DE DOIS SOCOS, como no jogo: um golpe só nunca
+## enche o medidor de dano. Esta captura existe para provar que a queda
+## acontece, e que as barras chegam ao fim.
+func _nocaute() -> void:
+	_resultado(9820, 1.6)
+	_arena_levou(9820)
+	_arena_levou(9820)
+	for i in range(28):
+		jogo.arena.avancar(1.0 / 60.0)
 
 func _resultado(pontos: int, veredito: float) -> void:
 	_preparar(GameDef.State.RESULT)
@@ -122,6 +160,7 @@ func _resultado(pontos: int, veredito: float) -> void:
 	jogo.result_time = 1.9 if veredito >= 0.0 else 1.0
 	if veredito >= 0.0:
 		jogo.moldura.set_estado(LedFrame.RESULTADO, GameDef.classificar(pontos)["cor_faixa"])
+	_arena_levou(pontos)
 
 func _contando() -> void:
 	_resultado(9030, -1.0)

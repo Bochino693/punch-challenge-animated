@@ -24,6 +24,11 @@ const EXTRA := [
 	"nivel_leve", "nivel_bom", "nivel_forte", "nivel_explosivo",
 	"nivel_nocaute", "nivel_peso", "nivel_lendario", "nivel_perfeito",
 	"start_negado", "armado", "couro", "subgrave",
+	# A ARENA TROUXE SONS PRÓPRIOS. O soco já tinha o couro e o
+	# subgrave — o que faltava era o CORPO: o baque de quem leva, a
+	# queda na lona e a plateia reagindo. Sem eles o lutador aparecia
+	# na tela mas o ouvido continuava batendo num saco de areia.
+	"arena_corpo", "arena_queda", "arena_publico",
 ]
 const LOOPS := ["music", "charge", "score_loop"]
 const ROOT := "res://assets/audio/arcade/"
@@ -50,6 +55,7 @@ const BARRAMENTOS := {
 	"nivel_leve": "Impact", "nivel_bom": "Impact", "nivel_forte": "Impact",
 	"nivel_explosivo": "Impact", "nivel_nocaute": "Impact", "nivel_peso": "Impact",
 	"nivel_lendario": "Impact", "nivel_perfeito": "Impact",
+	"arena_corpo": "Impact", "arena_queda": "Impact", "arena_publico": "SFX",
 	"credit": "UI", "start": "UI", "start_negado": "UI", "menu": "UI",
 	"error": "UI", "count": "UI", "go": "UI", "tick": "UI",
 	"shutter": "UI", "armado": "UI", "round_bell": "UI",

@@ -1,4 +1,25 @@
-# Punch Challenge
+# Punch Challenge — versão ARENA
+
+Esta é a **versão animada** da máquina de soco da
+**Lazer & Sport Brinquedos**. É o mesmo jogo de
+[`punch-challenge`](https://github.com/Bochino693/punch-challenge) —
+mesmo sensor, mesma ponte serial, mesma câmera, mesmo ranking, mesma
+Central Técnica — com **uma** diferença, na tela do soco:
+
+> No lugar do alvo desenhado, há uma **arena 3D emoldurada como um
+> quadro**, com um **lutador** que leva o impacto na medida do golpe, vai
+> à lona quando não aguenta mais, e tem o estado mostrado nas **colunas
+> de dano** das laterais. A cada soco a máquina grita uma frase.
+
+O lutador é um arquivo `.glb` de verdade (abre no Blender, troca sem
+programar). Como ele é feito, como trocá-lo, quanto custa numa TV Box e o
+que os testes guardam: **[`docs/ARENA.md`](docs/ARENA.md)**.
+
+O repositório original continua sendo a versão de referência: correção de
+sensor, de câmera ou de ranking deve entrar nos dois, e o código fora de
+`scripts/arena/` é igual de propósito para que isso continue possível.
+
+---
 
 Máquina de soco da **Lazer & Sport Brinquedos**: jogo em Godot 4 e
 firmware Arduino com sensor MPU-6050 no saco. O sensor mede a

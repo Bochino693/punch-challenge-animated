@@ -53,7 +53,13 @@ const RODAPE_Y := 1876.0
 const MARGEM := 60.0
 ## O ALVO NA TELA. É o centro do visor — o mesmo lugar em que o farol
 ## chama o soco e em que o número nasce logo depois.
-const ALVO_DO_SOCO := Vector2(540.0, 930.0)
+## O CENTRO DO QUADRO DA ARENA, e é ele que manda no espetáculo inteiro:
+## é aqui que o zoom do impacto cresce, é daqui que as faíscas saem, é
+## nisto que o farol mira. Nesta versão o alvo não é mais um desenho no
+## meio do vazio — é o lutador dentro da moldura, e por isso o ponto saiu
+## de 930 para o centro de `ArenaQuadro.TELA`. Mexer num sem mexer no
+## outro faria as faíscas do soco explodirem ao lado de quem apanhou.
+const ALVO_DO_SOCO := Vector2(540.0, 893.0)
 const LARGURA_UTIL := TELA.x - MARGEM * 2.0
 
 ## As cores que voam. Saem da paleta porque confete branco, que num
@@ -548,6 +554,16 @@ var _photo_cache: Dictionary = {}
 var _mutex_fotos := Mutex.new()
 var _fotos_decodificadas: Dictionary = {}
 
+## O QUE A ARENA DEIXOU DO ÚLTIMO GOLPE, guardado para a tela ler.
+##
+## `_draw` roda sessenta vezes por segundo e não pode sortear frase nem
+## perguntar "houve nocaute?" a cada passagem: a frase trocaria de texto
+## no meio da leitura. O golpe decide uma vez, aqui, e a tela só mostra.
+var arena_frase := ""
+var arena_nocaute := false
+## Quantos socos já foram dados — a semente das frases. Ver `ArenaFrases`.
+var arena_semente := 0
+
 var fx := PunchFX.new()
 ## O VIGIA DO RITMO. Mede o quadro e, quando a máquina não dá conta,
 ## manda os efeitos gastarem menos — sozinho, sem ninguém configurar.
@@ -582,6 +598,8 @@ var logo: Texture2D = null
 @onready var fundo: PunchBackground = $Fundo
 @onready var moldura: LedFrame = $Moldura
 @onready var sons: AudioBank = $Audio
+## A janela 3D. Ver `scripts/arena/arena3d.gd`.
+@onready var arena: Arena3D = $Arena
 
 func _ready() -> void:
 	fonte = ThemeDB.fallback_font
@@ -627,6 +645,7 @@ func _ready() -> void:
 		_converteu_esquema = false
 		_salvar()
 		_show_notice("CONFIGURAÇÃO DE PONTUAÇÃO ATUALIZADA")
+	_montar_arena()
 	_iniciar_serial()
 	_entrar_em_abertura()
 	# A música entra baixa por baixo da entrada e sobe na virada para a
@@ -634,6 +653,46 @@ func _ready() -> void:
 	# de simplesmente parar. As deixas da entrada tocam por cima.
 	sons.music(-30.0)
 	set_process(true)
+
+## PÕE O LUTADOR NA ARENA.
+##
+## O GLB é carregado UMA VEZ, no arranque, e nunca no meio de uma rodada:
+## carregar malha durante o jogo é engasgo garantido, e é justamente no
+## primeiro soco que ele apareceria.
+##
+## FALTAR O ARQUIVO NÃO PODE DERRUBAR A MÁQUINA. Um gabinete no salão não
+## tem quem conserte às onze da noite: sem o `.glb`, a arena fica sendo um
+## ringue vazio com as luzes acesas e o jogo segue inteiro — placar,
+## ranking, foto, tudo. É pior do que com o lutador, e é infinitamente
+## melhor do que uma tela preta.
+func _montar_arena() -> void:
+	if arena == null:
+		return
+	arena.qualidade = desempenho.qualidade
+	var caminho := "res://assets/personagem/lutador.glb"
+	if not ResourceLoader.exists(caminho):
+		push_warning("Arena sem lutador: %s não existe" % caminho)
+		return
+	var cena := load(caminho)
+	if cena is PackedScene and arena.instalar(cena as PackedScene):
+		arena.preparar()
+	else:
+		push_warning("Arena: %s não abriu como cena 3D" % caminho)
+
+## A ARENA SÓ EXISTE NAS TELAS EM QUE APARECE.
+##
+## Fora daqui o `SubViewport` fica com o desenho DESLIGADO — não é uma
+## imagem escondida, é uma imagem que não chega a ser calculada. Numa TV
+## Box isso é a diferença entre o mundo 3D custar o dia inteiro e custar
+## só os segundos em que alguém está olhando para ele. A tabela de
+## recordes (`verdict_time >= 2.5`) e a Central também não o querem: ali
+## a moldura já saiu da tela.
+func _arena_no_ar() -> bool:
+	if central_aberta or intro_active:
+		return false
+	if state == GameDef.State.RESULT and verdict_time >= 2.5:
+		return false
+	return state in [GameDef.State.ARMED, GameDef.State.MEASURING, GameDef.State.RESULT]
 
 func _exit_tree() -> void:
 	if link != null:
@@ -737,6 +796,10 @@ func _process(delta: float) -> void:
 	# 96 segmentos com borda lisa, do anel de 1300 pixels ao de 90, em
 	# todo quadro do impacto. Ver `Traco.arco`.
 	Traco.qualidade = desempenho.qualidade
+	if arena != null:
+		arena.qualidade = desempenho.qualidade
+		arena.ligar(_arena_no_ar())
+		arena.avancar(passo)
 	_socorro_da_camera(passo)
 	_laco_de_atracao(passo)
 	zoom_impacto = lerpf(zoom_impacto, zoom_alvo, clampf(passo * 7.0, 0.0, 1.0))
@@ -1009,6 +1072,8 @@ func _armar_proximo_soco() -> void:
 	sons.play("round_bell", -2.0)
 	sons.play("go")
 	moldura.set_estado(LedFrame.ARMADA)
+	if arena != null:
+		arena.guardar(true)
 	_show_notice("SOCO %d DE %d" % [socos.size() + 1, SOCOS_POR_RODADA])
 
 ## FECHA A RODADA E DECIDE A NOTA.
@@ -1423,6 +1488,15 @@ func _iniciar_rodada() -> void:
 	sons.music(-24.0)
 	moldura.set_estado(LedFrame.CONTAGEM)
 	fundo.matiz = Color(0, 0, 0, 0)
+	# CADA RODADA COMEÇA COM O ADVERSÁRIO INTEIRO. Herdar o dano da
+	# rodada anterior faria a segunda pessoa da fila derrubar alguém que
+	# já estava caindo — e as barras laterais mentiriam sobre o que ELA
+	# fez.
+	arena_frase = ""
+	arena_nocaute = false
+	arena_semente = 0
+	if arena != null:
+		arena.preparar()
 	_salvar()
 
 ## DEVOLVE A FICHA DA RODADA QUE NÃO ACONTECEU.
@@ -1540,6 +1614,32 @@ func _registrar_impacto(
 	zoom_impacto = float(receita["zoom"])
 	pancada_tempo = 0.0
 	pancada_forca = forca
+	# O SOCO ATRAVESSA A TELA E ACERTA ALGUÉM.
+	#
+	# Esta é a linha que separa esta versão da original: antes o golpe
+	# virava tremor, clarão e número; agora ele também é um corpo indo
+	# para trás. A ordem importa — o nível já foi decidido acima, então a
+	# arena recebe a MESMA força que o resto do espetáculo, e não uma
+	# conta própria que poderia discordar da cor e do som.
+	arena_semente = socos.size()
+	arena_frase = ArenaFrases.de_golpe(str(pancada_nivel["id"]), arena_semente)
+	arena_nocaute = false
+	if arena != null:
+		arena.guardar(false)
+		# Os níveis que derrubam por si são os que já tinham hit-stop na
+		# tabela: é a mesma linha que decide o soluço da imagem, e não um
+		# segundo critério para a mesma ideia de "golpe que para tudo".
+		var derruba := float(pancada_nivel["hitstop"]) > 0.0
+		var reacao := arena.golpe(forca, derruba)
+		arena_nocaute = bool(reacao["nocaute"])
+	# O BAQUE TEM DUAS CAMADAS AGORA: o couro do impacto e o corpo que
+	# leva. Sem a segunda, o soco continuava soando como saco de areia
+	# mesmo com um lutador na tela levando o golpe.
+	sons.play("arena_corpo", -1.0 + forca * 4.0)
+	if arena_nocaute:
+		arena_frase = ArenaFrases.de_nocaute(arena_semente)
+		sons.play("arena_queda", 0.0)
+		sons.play("arena_publico", -2.0)
 	# RANKING, ESTATÍSTICA E DISCO SAÍRAM DAQUI, e isso é a correção que
 	# os dois socos exigem: enquanto estavam neste ponto, cada soco entrava
 	# no Top 20 sozinho — dois socos da mesma pessoa disputando duas linhas
@@ -3305,7 +3405,10 @@ func _draw_partida() -> void:
 	# A marca acompanha a rodada inteira, à direita e discreta — menos na
 	# contagem, onde ela é desenhada ao lado do visor da foto.
 	if state != GameDef.State.COUNTDOWN:
-		_marca_lateral(1766.0, 0.70, 78.0)
+		# A marca desceu 60 px em relação à versão original: os cartões dos
+		# socos e a colocação no ranking passaram a terminar mais embaixo
+		# depois que a arena tomou o meio da tela.
+		_marca_lateral(1828.0, 0.70, 66.0)
 	match state:
 		GameDef.State.COUNTDOWN:
 			_texto_arcade("FAÇA SUA POSE", 340.0, 72, Paleta.CIANO, LARGURA_UTIL)
@@ -3369,6 +3472,38 @@ func _draw_partida() -> void:
 		GameDef.State.MEASURING, GameDef.State.RESULT:
 			_draw_score_hero()
 
+## O QUADRO NA PAREDE: a arena 3D, a moldura e as barras de dano.
+##
+## Tudo o que vem do mundo 3D entra na tela por AQUI, numa chamada só, e
+## é de propósito: se a imagem da arena pudesse ser desenhada de três
+## lugares diferentes, um deles acabaria desenhando sem a moldura ou com
+## as barras trocadas. Um caminho só, usado pelas duas telas do soco.
+func _draw_arena() -> void:
+	ArenaQuadro.fundo(self)
+	if arena != null and arena.ativa():
+		ArenaQuadro.imagem(self, arena.get_texture())
+	# A MOLDURA ACENDE COM O GOLPE. `clarao` já é o clarão do impacto
+	# caindo de 1 a 0 — reaproveitá-lo faz a moldura piscar exatamente no
+	# compasso do resto da tela, em vez de ter um relógio só dela que
+	# poderia sair de sincronia.
+	ArenaQuadro.moldura(self, ScoreTier.cor_de(result_score), clarao)
+	var dano := arena.dano() if arena != null else 0.0
+	ArenaQuadro.barras(self, dano, animation_time)
+	# A PLAQUETA DE CIMA DIZ O QUE AS BARRAS MEDEM. Duas colunas
+	# coloridas sem legenda são bonitas e mudas: quem está na frente da
+	# máquina não tem como saber se aquilo é tempo, força ou vida.
+	# NA LONA, A PERCENTAGEM NÃO É MAIS A NOTÍCIA. Um nível alto derruba
+	# por si, sem encher o medidor — e ler "CAMBALEANDO 61%" ao lado de um
+	# corpo deitado no chão é a plaqueta discordando da imagem.
+	var estado := ArenaFrases.de_dano(dano)
+	if arena != null and arena.na_lona():
+		estado = "NA LONA"
+	_letreiro_centrado(
+		"ADVERSÁRIO  •  %s  %d%%" % [estado, int(round(dano * 100.0))],
+		ArenaQuadro.MOLDURA.position.y + 32.0, _corpo(24),
+		ArenaQuadro.cor_do_dano(dano), fonte_texto
+	)
+
 ## A TELA QUE ESPERA O SOCO.
 ##
 ## Não há saco desenhado, não há barra de tempo e — desde a escala de
@@ -3383,14 +3518,28 @@ func _draw_partida() -> void:
 ## instrumento.
 func _draw_espera_do_soco() -> void:
 	_draw_farol(Paleta.AMBAR)
+	_draw_arena()
+	# O ROUND, na barra de baixo da moldura. É a única informação que
+	# cabe ali e a única que a pessoa quer no instante anterior ao soco.
+	_letreiro_centrado(
+		"ROUND %d DE %d" % [socos.size() + 1, SOCOS_POR_RODADA],
+		ArenaQuadro.MOLDURA.end.y - 14.0, _corpo(24), Paleta.TINTA_FRACA, fonte_texto
+	)
 	var piscada := 0.78 + 0.22 * sin(animation_time * 4.4)
 	var chamada := "SOQUE AGORA!" if socos.is_empty() else "AGORA O SEGUNDO!"
-	_texto_arcade(chamada, 1420.0, 96, Color(Color.WHITE, piscada), LARGURA_UTIL)
-	_rotulo("ACERTE O ALVO COM TODA A FORÇA", 1488.0, Color.WHITE)
-	_rotulo("RECORDE DA CASA  %04d" % _melhor(), 1556.0, Paleta.AMBAR)
+	_texto_arcade(chamada, 1412.0, 88, Color(Color.WHITE, piscada), LARGURA_UTIL)
+	_rotulo("ACERTE O ALVO COM TODA A FORÇA", 1470.0, Color.WHITE)
+	# A PROVOCAÇÃO DA ARENA. Ela não repete a instrução de cima: a
+	# instrução diz o que fazer, esta diz por que vale a pena. É a voz do
+	# jogo, e é o que um cartaz de console antigo teria aqui.
+	_texto_cabendo(
+		ArenaFrases.de_espera(socos.size() + int(plays)), 1528.0, 40,
+		Paleta.AMBAR, LARGURA_UTIL
+	)
+	_rotulo("RECORDE DA CASA  %04d" % _melhor(), 1580.0, Paleta.TINTA_FRACA)
 	# Os dois socos ficam à vista DURANTE a espera: é enquanto se prepara
 	# para bater que saber o que o primeiro valeu muda alguma coisa.
-	_draw_cartoes_dos_socos(1606.0, false)
+	_draw_cartoes_dos_socos(1612.0, false)
 
 	# O RELÓGIO SÓ APARECE NO FIM, e vem acompanhado da promessa.
 	#
@@ -3400,7 +3549,7 @@ func _draw_espera_do_soco() -> void:
 	# aviso vira ameaça.
 	if espera_left <= GameDef.AVISO_DE_VOLTA:
 		var segundos := maxi(0, int(ceil(espera_left)))
-		_apoio("VOLTANDO EM %02d  •  O CRÉDITO É DEVOLVIDO" % segundos, 1786.0, Color.WHITE)
+		_apoio("VOLTANDO EM %02d  •  O CRÉDITO É DEVOLVIDO" % segundos, 1800.0, Color.WHITE)
 
 ## O FAROL E O ALVO: anéis saindo do ponto do soco, em batidas.
 ##
@@ -3411,19 +3560,33 @@ func _draw_espera_do_soco() -> void:
 func _draw_farol(cor: Color) -> void:
 	var centro := ALVO_DO_SOCO
 	var compasso := 1.15
+	# OS ANÉIS SAEM DE TRÁS DO QUADRO.
+	#
+	# Na versão original eles nasciam pequenos, no meio do alvo desenhado.
+	# Aqui o meio é ocupado pela arena, e um anel cruzando a imagem do
+	# lutador leria como falha de desenho. Começando FORA da moldura eles
+	# viram o que sempre quiseram ser: luz escapando por trás do quadro.
 	for i in range(3):
 		var fase := fmod(animation_time / compasso + float(i) / 3.0, 1.0)
-		var raio := lerpf(330.0, 620.0, ease(fase, 0.45))
-		Traco.arco(self, centro, raio, Color(cor, (1.0 - fase) * 0.55), 10.0)
+		var raio := lerpf(470.0, 760.0, ease(fase, 0.45))
+		Traco.arco(self, centro, raio, Color(cor, (1.0 - fase) * 0.50), 10.0)
+	# OS CANTOS DE MIRA AGORA ABRAÇAM A MOLDURA. Dizem "é AQUI que o soco
+	# acerta" apontando para a arena, e não para um ponto no vazio — e
+	# respiram, para não virarem um enfeite parado.
 	var respiro := 0.5 + 0.5 * sin(animation_time * 2.2)
-	Icones.alvo(self, centro, lerpf(268.0, 288.0, respiro), cor)
-	# Cantos de mira em volta do alvo: dizem "é AQUI" sem escrever nada.
-	var recuo := lerpf(330.0, 348.0, respiro)
-	for sx in [-1.0, 1.0]:
-		for sy in [-1.0, 1.0]:
-			var canto := centro + Vector2(sx * recuo, sy * recuo)
-			draw_line(canto, canto - Vector2(sx * 70.0, 0.0), Color(cor, 0.85), 8.0, true)
-			draw_line(canto, canto - Vector2(0.0, sy * 70.0), Color(cor, 0.85), 8.0, true)
+	var folga := lerpf(16.0, 30.0, respiro)
+	var m := ArenaQuadro.MOLDURA.grow(folga)
+	for sx in [0.0, 1.0]:
+		for sy in [0.0, 1.0]:
+			var canto := Vector2(lerpf(m.position.x, m.end.x, sx), lerpf(m.position.y, m.end.y, sy))
+			var dx := 72.0 * (1.0 if sx < 0.5 else -1.0)
+			# O BRAÇO DE BAIXO É MAIS CURTO. Com 78 px ele descia até a
+			# linha do "SOQUE AGORA!" e cortava a primeira letra — e um
+			# enfeite que atravessa a chamada principal é um enfeite que
+			# está atrapalhando o trabalho da tela.
+			var dy := (72.0 if sy < 0.5 else -44.0)
+			draw_line(canto, canto + Vector2(dx, 0.0), Color(cor, 0.85), 9.0, true)
+			draw_line(canto, canto + Vector2(0.0, dy), Color(cor, 0.85), 9.0, true)
 
 ## A ABERTURA GIRA EM TRÊS CAPÍTULOS.
 ##
@@ -3574,74 +3737,61 @@ func _pontos_do_capitulo(capitulo: int, alpha := 1.0) -> void:
 		var cor: Color = Paleta.AMBAR if atual else Color("6d2835")
 		draw_circle(centro, 8.0 if atual else 5.0, Color(cor, alpha), true, -1.0, true)
 
+## A PLAQUETA DO PLACAR, montada a cavaleiro na borda de baixo da moldura.
+const PLACA_DO_PLACAR := Rect2(268.0, 1232.0, 544.0, 186.0)
+const PLACAR_NA_ARENA := 128
+
 func _draw_score_hero() -> void:
-	var center := Vector2(540, 930)
 	var measuring := state == GameDef.State.MEASURING
-	# O ANEL MEDE A FORÇA, NÃO O RELÓGIO.
+	# O ANEL MEDE A FORÇA, NÃO O RELÓGIO — e nesta versão ele deixou de
+	# ser anel.
 	#
-	# Ele enchia com `result_time / CONTAGEM_DURACAO`, ou seja, com o
-	# tempo da animação: um soco de 120 pontos fechava o anel inteiro
-	# igualzinho a um de 961, porque os dois levavam os mesmos dois
-	# segundos para contar. A pessoa batia fraco e via a barra encostar
-	# no fim — e aí nada na tela combinava com o que ela tinha feito.
-	# Ligado à pontuação, o anel vira o retrato do golpe: fraco fecha um
-	# pedaço, nocaute fecha quase tudo. E continua animando, porque
-	# `displayed_score` é o número subindo.
-	var progress := 0.0 if measuring else clampf(displayed_score / float(GameDef.SCORE_MAX), 0.0, 1.0)
-	# A cor também é a da faixa conquistada, e não uma só para todo mundo:
-	# o anel de um golpe fraco não pode ser igual ao de um nocaute.
-	var color := Paleta.CIANO
+	# O medalhão redondo de 326 px de raio ocupava exatamente o lugar que
+	# a arena ocupa agora, e as duas coisas não cabem: ou se vê o número
+	# ou se vê quem levou o soco. A leitura da força não se perdeu, ela
+	# MUDOU DE OBJETO — quem conta agora são as barras de dano na lateral
+	# (quanto o adversário aguentou) e o trilho dentro da plaqueta (quanto
+	# este soco valeu na escala). Dois instrumentos honestos no lugar de
+	# um redondo que disputava espaço com a cena.
+	var progresso := 0.0 if measuring else clampf(displayed_score / float(GameDef.SCORE_MAX), 0.0, 1.0)
+	var cor := Paleta.CIANO
 	if verdict_time >= 0.0:
-		color = GameDef.classificar(result_score)["cor_faixa"] as Color
-	_draw_campo_de_forca(center, color, progress, measuring)
-	_draw_colunas_de_forca(color, progress)
-	# O HALO DO ANEL, EM TRÊS PASSADAS E NÃO EM DOZE.
-	#
-	# Aqui havia doze anéis de 192 segmentos cada, com alfa 0,02 — três
-	# níveis de tinta em duzentos e cinquenta e cinco, ou seja, cada um
-	# praticamente invisível sozinho. Somados custavam TREZE MIL
-	# triângulos por quadro, que era sessenta por cento de todo o desenho
-	# desta tela. Três anéis mais largos, com o alfa somado, dão o mesmo
-	# brilho por um doze avos do preço.
-	#
-	# E 64 segmentos bastam: num raio de 340 px, a flecha do arco de 64
-	# lados é de quatro décimos de pixel. Os 192 desenhavam três vezes
-	# mais geometria para descrever a mesma circunferência.
-	for i in range(3):
-		draw_arc(center, 337.0 + float(i) * 11.0, 0, TAU, 64, Color(color, 0.075), 13.0, true)
-	draw_circle(center, 326.0, Color("250911"), true, -1.0, true)
-	draw_arc(center, 327, 0, TAU, 96, Color("6d2835"), 4.0, true)
-	for i in range(60):
-		var angle := float(i) / 60.0 * TAU - PI * 0.5
-		var lit := float(i) / 60.0 <= progress
-		draw_arc(center, 347, angle, angle + 0.065, 5, color if lit else Color("57212c"), 14.0, true)
-	draw_arc(center, 302, animation_time * 0.5, animation_time * 0.5 + 1.2, 64, Color(color, 0.55), 2.0, true)
-	_rotulo("IMPACTO" if measuring else ("SUA PONTUAÇÃO" if verdict_time >= 0.0 else "CALCULANDO"), 785.0, color)
+		cor = GameDef.classificar(result_score)["cor_faixa"] as Color
+	_draw_campo_de_forca(ALVO_DO_SOCO, cor, progresso, measuring)
+	_draw_arena()
+
+	# A plaqueta: metade sobre a moldura, metade fora. É o que a faz
+	# parecer pregada no quadro em vez de flutuando embaixo dele.
+	_cartao(PLACA_DO_PLACAR, Color("1d0810"), cor, 1.0, 4.0)
 	_placar(
 		"– – – –" if measuring else "%04d" % int(round(displayed_score)),
-		center + Vector2(0.0, 20.0), color if measuring else Color.WHITE
+		Vector2(540.0, 1296.0), cor if measuring else Color.WHITE, PLACAR_NA_ARENA
 	)
+	# O TRILHO DA FORÇA: o mesmo dado do anel antigo, deitado. Num
+	# retângulo largo ele compara melhor do que comparava em círculo —
+	# meia barra contra barra cheia se vê de longe.
+	var trilho := Rect2(304.0, 1362.0, 472.0, 12.0)
+	draw_rect(trilho, Color("3a141d"))
+	if progresso > 0.0:
+		draw_rect(Rect2(trilho.position, Vector2(trilho.size.x * progresso, trilho.size.y)), cor)
+	_apoio("IMPACTO" if measuring else ("PONTOS" if verdict_time >= 0.0 else "CALCULANDO"), 1404.0, cor)
+
 	if verdict_time >= 0.0:
-		_rotulo("PONTOS", 1110.0, color)
-		# A VELOCIDADE CRUA SAIU DAQUI, e não do jogo: ela agora aparece
-		# DENTRO de cada cartão, ao lado do soco que a produziu. Repetir a
-		# do melhor soco solta no meio da tela dizia menos (não se sabe de
-		# qual dos dois é) e ocupava a linha que o veredito precisa.
-		# Quem duvida do placar continua tendo o número cru à vista — só
-		# que agora são dois, um por soco.
 		# O NOME DO NÍVEL VEM ANTES DA COLOCAÇÃO. A pessoa quer saber o
 		# que ela fez — "NOCAUTE" — e só depois onde isso a coloca. A
 		# ordem inversa transformava o veredito numa tabela.
-		_texto_arcade(ScoreTier.nome_de(result_score), 1440.0, 84, color, LARGURA_UTIL)
-		if posicao_no_ranking > 0:
-			_rotulo("%dº LUGAR NO TOP 20" % posicao_no_ranking, 1520.0, Paleta.AMBAR)
+		_texto_arcade(ScoreTier.nome_de(result_score), 1490.0, 78, cor, LARGURA_UTIL)
+		# E A FRASE VEM DEPOIS DO NOME. O nome é a nota; a frase é o
+		# locutor. Sem ela o veredito volta a ser uma etiqueta — com ela
+		# a máquina parece ter visto o soco acontecer.
+		if not arena_frase.is_empty():
+			_texto_cabendo(arena_frase, 1556.0, 44, Paleta.AMBAR, LARGURA_UTIL)
 		# OS DOIS SOCOS CONTINUAM À VISTA NO RESULTADO, com o que deu a
-		# nota marcado. É o que explica a nota final sem precisar de uma
-		# linha de texto dizendo "vale o melhor dos dois".
-		# MELHOR só existe quando há com quem comparar. No resultado do
-		# primeiro soco a marca seria ruído: ele é o melhor porque é o
-		# único.
+		# nota marcado. MELHOR só existe quando há com quem comparar: no
+		# resultado do primeiro soco ele é o melhor porque é o único.
 		_draw_cartoes_dos_socos(1600.0, socos.size() >= SOCOS_POR_RODADA)
+		if posicao_no_ranking > 0:
+			_apoio("%dº LUGAR NO TOP 20" % posicao_no_ranking, 1800.0, Paleta.AMBAR)
 
 ## O CARREGANDO: UM ANEL QUE GIRA E UMA FRASE DO QUE ESTÁ ACONTECENDO.
 ##
@@ -3793,23 +3943,27 @@ func _draw_cartoes_dos_socos(y: float, marcar_melhor: bool) -> void:
 				caixa.position.y + 92.0, 42, Color(cor, pulso), dentro, esq
 			)
 
-func _placar(texto: String, centro: Vector2, cor: Color) -> void:
-	var medida := fonte.get_string_size(texto, HORIZONTAL_ALIGNMENT_LEFT, -1, PLACAR_CORPO)
-	var pos := Vector2(centro.x - medida.x * 0.5, centro.y + PLACAR_CORPO * 0.36)
+## O PLACAR ACEITA UM CORPO DE LETRA porque agora há dois tamanhos: a
+## plaqueta da arena (menor, porque a arena ficou com o meio da tela) e o
+## corpo cheio de antes. Um número escrito duas vezes por dois códigos
+## diferentes é como os dois deixam de ter o mesmo contorno.
+func _placar(texto: String, centro: Vector2, cor: Color, corpo := PLACAR_CORPO) -> void:
+	var medida := fonte.get_string_size(texto, HORIZONTAL_ALIGNMENT_LEFT, -1, corpo)
+	var pos := Vector2(centro.x - medida.x * 0.5, centro.y + corpo * 0.36)
 	# Um halo, em vez de três atlas de contorno sobrepostos a cada número.
 	draw_string_outline(
-		fonte, pos, texto, HORIZONTAL_ALIGNMENT_LEFT, -1, PLACAR_CORPO,
-		int(PLACAR_CORPO * 0.25), Color(cor, 0.22)
+		fonte, pos, texto, HORIZONTAL_ALIGNMENT_LEFT, -1, corpo,
+		int(corpo * 0.25), Color(cor, 0.22)
 	)
 	draw_string_outline(
-		fonte, pos, texto, HORIZONTAL_ALIGNMENT_LEFT, -1, PLACAR_CORPO,
-		int(PLACAR_CORPO * 0.085), Color(Paleta.CONTORNO, 0.95)
+		fonte, pos, texto, HORIZONTAL_ALIGNMENT_LEFT, -1, corpo,
+		int(corpo * 0.085), Color(Paleta.CONTORNO, 0.95)
 	)
 	draw_string(
-		fonte, pos - Vector2(0.0, PLACAR_CORPO * 0.045), texto,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, PLACAR_CORPO, cor.lightened(0.5)
+		fonte, pos - Vector2(0.0, corpo * 0.045), texto,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, corpo, cor.lightened(0.5)
 	)
-	draw_string(fonte, pos, texto, HORIZONTAL_ALIGNMENT_LEFT, -1, PLACAR_CORPO, cor)
+	draw_string(fonte, pos, texto, HORIZONTAL_ALIGNMENT_LEFT, -1, corpo, cor)
 
 ## O VAZIO ATRÁS DO PLACAR ERA O MAIOR PEDAÇO DA TELA.
 ##
@@ -3825,44 +3979,33 @@ func _draw_campo_de_forca(centro: Vector2, cor: Color, progresso: float, no_impa
 	var forca := progresso
 	if no_impacto:
 		forca = 1.0 - clampf(state_time / GameDef.IMPACTO_DURACAO, 0.0, 1.0)
-	# O CAMPO DE FORÇA, EM TRÊS DISCOS E NÃO EM SETE.
-	#
-	# Cada um destes discos tem raio maior que meia tela: sete deles são
-	# sete telas inteiras pintadas por quadro, com alfa 0,013 — tinta que
-	# ninguém enxerga isolada. Não custa triângulo, custa TAXA DE
-	# PREENCHIMENTO, que é o que falta primeiro num PC de gabinete com
-	# vídeo integrado. Três discos com o alfa somado dão o mesmo halo.
-	for i in range(3):
-		draw_circle(centro, 392.0 + float(i) * 150.0, Color(cor, 0.030 * forca), true, -1.0, true)
+	# DOIS DISCOS, E OS DOIS MAIORES QUE O QUADRO. Eles tingem a tela
+	# inteira com a cor do nível; o miolo fica escondido atrás da arena,
+	# então o que se vê é o halo escapando em volta da moldura — que é
+	# exatamente o efeito que se quer, luz saindo de trás do quadro.
+	for i in range(2):
+		draw_circle(centro, 600.0 + float(i) * 190.0, Color(cor, 0.040 * forca), true, -1.0, true)
+	# E OS RAIOS COMEÇAM FORA DA MOLDURA. Nascendo no centro eles
+	# cruzariam a imagem do lutador; nascendo na borda, viram o brilho de
+	# um telão empurrando luz para os cantos da tela.
 	for i in range(36):
 		var ang := float(i) * TAU / 36.0 + animation_time * 0.22
 		var onda := 0.5 + 0.5 * sin(float(i) * 1.7 - animation_time * 4.0)
-		var perto := 372.0
-		var longe := perto + lerpf(24.0, 200.0, forca * onda)
+		var perto := 500.0
+		var longe := perto + lerpf(24.0, 260.0, forca * onda)
 		draw_line(
 			centro + Vector2.from_angle(ang) * perto,
 			centro + Vector2.from_angle(ang) * longe,
 			Color(cor, 0.08 + 0.34 * forca * onda), 6.0, true
 		)
 
-## AS DUAS COLUNAS, uma de cada lado do painel.
+## AS DUAS COLUNAS DE PONTUAÇÃO SAÍRAM DAQUI E VIRARAM AS BARRAS DE DANO.
 ##
-## São a mesma pontuação lida de outro jeito, e existem porque o número
-## no meio é redondo e o olho não compara redondo com redondo. Coluna
-## cheia contra coluna pela metade é a diferença entre dois socos vista
-## de longe, sem ler algarismo nenhum.
-func _draw_colunas_de_forca(cor: Color, progresso: float) -> void:
-	var degraus := 22
-	for lado in [0.0, 1.0]:
-		var x := lerpf(92.0, 944.0, lado)
-		for i in range(degraus):
-			var fatia := float(i) / float(degraus)
-			var caixa := Rect2(x, 1512.0 - float(i) * 44.0, 44.0, 26.0)
-			if fatia < progresso:
-				draw_rect(caixa, cor)
-				draw_rect(caixa.grow(3.0), Color(cor, 0.18))
-			else:
-				draw_rect(caixa, Color("3a141d"))
+## Elas mediam a pontuação do soco, uma de cada lado do painel; a posição
+## é a mesma e o desenho é o mesmo — o que mudou foi o que elas contam.
+## Agora contam o estado do adversário, que é um número que só esta
+## versão do jogo produz. Ver `ArenaQuadro.barras`, onde elas moram desde
+## então, e `Lutador3D.DANO_POR_GOLPE`, que é quem alimenta o número.
 
 ## Ouro, prata e bronze nos três primeiros; azul da casa nos demais. É a
 ## convenção que todo mundo já lê sem legenda.
