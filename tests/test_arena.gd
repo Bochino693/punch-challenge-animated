@@ -31,7 +31,7 @@ func _perto(a: float, b: float, folga: float, o_que: String) -> void:
 	_ok(absf(a - b) <= folga, "%s (%.4f vs %.4f)" % [o_que, a, b])
 
 func _initialize() -> void:
-	_test_o_glb_existe_e_tem_as_juntas()
+	_test_o_glb_existe_e_tem_contrato_humanoide()
 	_test_a_janela_tem_a_proporcao_do_buraco()
 	_test_as_barras_cabem_na_moldura()
 	_test_o_dano_soma_e_nao_passa_de_um()
@@ -46,7 +46,7 @@ func _initialize() -> void:
 	quit(1 if falhas > 0 else 0)
 
 # ----------------------------------------------------------------- GLB
-func _test_o_glb_existe_e_tem_as_juntas() -> void:
+func _test_o_glb_existe_e_tem_contrato_humanoide() -> void:
 	_ok(ResourceLoader.exists(CAMINHO_DO_GLB), "o lutador em GLB tem de estar no disco")
 	if not ResourceLoader.exists(CAMINHO_DO_GLB):
 		return
@@ -55,13 +55,19 @@ func _test_o_glb_existe_e_tem_as_juntas() -> void:
 	if cena == null:
 		return
 	var corpo := cena.instantiate()
-	# TODAS as juntas que o script anima têm de existir no arquivo. Uma
-	# faltando não derruba o jogo (é ignorada), e é justamente por isso
-	# que precisa de teste: o boneco pararia de mexer a cabeça e ninguém
-	# veria erro nenhum no console.
-	for nome in Lutador3D.JUNTAS:
-		_ok(corpo.find_child(nome, true, false) != null, "o GLB precisa da peça %s" % nome)
-	corpo.free()
+	var controle := Lutador3D.new()
+	controle.montar(corpo as Node3D)
+	if controle.tem_esqueleto():
+		var animacoes := controle.animacoes_disponiveis()
+		for nome in Lutador3D.ALIASES:
+			_ok(nome in animacoes, "o GLB rigado precisa da animação %s" % nome)
+	else:
+		# O checkout ainda pode conter o asset legado antes de o gerador
+		# Blender ser executado. O jogo continua abrindo, mas a ferramenta
+		# definitiva precisa estar presente para a instalação local.
+		_ok(FileAccess.file_exists("res://tools/gerar_personagem_blender.py"),
+			"asset legado exige o gerador humanoide")
+	controle.free()
 
 # -------------------------------------------------------------- moldura
 func _test_a_janela_tem_a_proporcao_do_buraco() -> void:

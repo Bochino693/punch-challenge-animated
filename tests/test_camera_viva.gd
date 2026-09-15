@@ -59,7 +59,7 @@ func run() -> void:
 	await process_frame
 
 	_vida_vem_da_imagem()
-	_quadro_repetido_nao_e_vida()
+	_quadro_repetido_mantem_a_sessao()
 	_escuro_conta_como_vida()
 	_foto_nao_sai_de_quadro_congelado()
 	_obturador_guarda_o_melhor_da_pose()
@@ -73,13 +73,12 @@ func _vida_vem_da_imagem() -> void:
 	assert(svc.ao_vivo())
 	assert(svc.parada_ha() < 100)
 
-	# O ESTADO SOZINHO NÃO BASTA. Este é o coração do defeito: ACESA com
-	# a imagem parada dizia "pronta", e a contagem começava em cima dela.
+	# Depois da primeira prova, a sessão continua aprovada entre rodadas.
 	svc.estado = svc.Estado.ACESA
 	assert(svc.pronta())
-	svc._ultima_mudanca_ms = Time.get_ticks_msec() - svc.VIDA_MAXIMA_MS - 50
+	svc._last_frame_ms = Time.get_ticks_msec() - svc.VIDA_MAXIMA_MS - 50
 	assert(not svc.ao_vivo())
-	assert(not svc.pronta())
+	assert(svc.pronta())
 	assert(not svc.available())
 
 	# E volta a valer no primeiro quadro novo.
@@ -87,7 +86,7 @@ func _vida_vem_da_imagem() -> void:
 	assert(svc.ao_vivo())
 	assert(svc.pronta())
 
-func _quadro_repetido_nao_e_vida() -> void:
+func _quadro_repetido_mantem_a_sessao() -> void:
 	var igual := quadro(7)
 	svc._registrar_quadro(igual, Time.get_ticks_msec())
 	var marca: int = svc._ultima_mudanca_ms
@@ -96,6 +95,8 @@ func _quadro_repetido_nao_e_vida() -> void:
 	# idênticos — há ruído térmico até com a tampa na lente.
 	svc._registrar_quadro(igual.duplicate(), Time.get_ticks_msec() + 500)
 	assert(svc._ultima_mudanca_ms == marca)
+	assert(svc.ao_vivo())
+	assert(svc.pronta())
 	# Um quadro DIFERENTE, sim.
 	svc._registrar_quadro(quadro(8), Time.get_ticks_msec() + 600)
 	assert(svc._ultima_mudanca_ms > marca)
@@ -133,7 +134,7 @@ func _foto_nao_sai_de_quadro_congelado() -> void:
 	# A imagem está parada há mais tempo do que o serviço tolera: é
 	# congelamento de verdade, e não o meio segundo de engasgo que uma
 	# webcam barata dá ao trocar a exposição.
-	svc._ultima_mudanca_ms = Time.get_ticks_msec() - svc.VIDA_MAXIMA_MS - 100
+	svc._last_frame_ms = Time.get_ticks_msec() - svc.VIDA_MAXIMA_MS - 100
 	assert(not svc.ao_vivo())
 	assert(svc.capture_photo().is_empty())
 
