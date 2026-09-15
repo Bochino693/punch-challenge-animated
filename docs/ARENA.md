@@ -44,10 +44,11 @@ chega esticada) e os testes.
 
 | arquivo | o que faz |
 |---|---|
-| `tools/gerar_personagem_glb.py` | gera o lutador em `.glb` do zero |
-| `assets/personagem/lutador.glb` | o boneco, 56 peças, ~76 KB |
+| `tools/gerar_personagem_blender.py` | gera o humanoide rigado, materiais e nove ações |
+| `tools/gerar_personagem_windows.ps1` | encontra o Blender e executa o gerador no Windows |
+| `assets/personagem/lutador.glb` | modelo carregado pelo jogo |
 | `scripts/arena/arena3d.gd` | o mundo 3D dentro do `SubViewport` |
-| `scripts/arena/lutador.gd` | a animação do corpo, por código |
+| `scripts/arena/lutador.gd` | integra Skeleton3D, skin e AnimationPlayer |
 | `scripts/arena/quadro.gd` | a moldura e as colunas de dano, em 2D |
 | `scripts/arena/frases.gd` | o que a máquina grita a cada nível |
 | `tools/gerar_audio_arena.py` | o baque no corpo, a queda e a plateia |
@@ -56,32 +57,26 @@ chega esticada) e os testes.
 ## Trocar o lutador
 
 O boneco é um `.glb` comum. Para pôr outro no lugar, basta substituir
-`assets/personagem/lutador.glb`. O jogo aceita três casos e nenhum
-derruba a máquina:
-
-1. **O GLB tem as peças com os nomes de `Lutador3D.JUNTAS`**
-   (`Quadril`, `Tronco`, `Cabeca`, `Ombro_E`, `Antebraco_D`, `Luva_E`…):
-   animação completa — recuo, chicote da cabeça, guarda, queda.
-2. **O GLB tem um `AnimationPlayer`** com animações chamadas `idle`,
-   `guard`, `hit` ou `ko`: o jogo toca as do arquivo e não mexe nas
-   peças. Quem modelou sabe melhor como o boneco se move.
-3. **O GLB não tem nem uma coisa nem outra**: o corpo inteiro ainda
-   recua, sacode e tomba, porque o nó raiz sempre existe.
+`assets/personagem/lutador.glb`. O contrato recomendado é `Skeleton3D`,
+mesh com skin e `AnimationPlayer`. O controlador reconhece nomes com
+prefixos de exportadores e procura: `idle`, `guard`, `taunt_weak`,
+`hit_light`, `hit_medium`, `hit_heavy`, `stagger`, `knockout` e `get_up`.
+Um fallback de transformação da raiz mantém um GLB externo incompleto
+visível, mas não substitui o contrato rigado.
 
 E se o arquivo **não existir**, a arena vira um ringue vazio iluminado e
 o jogo segue inteiro — placar, ranking, foto, tudo. Um gabinete no salão
 não tem quem conserte às onze da noite.
 
-Para refazer o boneco que vem no repositório:
+Para gerar o humanoide no Windows, a partir da raiz do projeto:
 
-```
-python3 tools/gerar_personagem_glb.py
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\gerar_personagem_windows.ps1
 ```
 
-O script é a fonte: apagar o `.glb` e rodar de novo devolve o mesmo
-boneco. A aparência (cabelo espetado preto, luva vermelha, calção preto
-com faixa vermelha e branca) e as cores estão na tabela `MATERIAIS`, no
-topo do arquivo; a montagem do corpo, em `PECAS`; a guarda, em `POSE`.
+O resultado tem uma malha skinned, 24 ossos, volumes arredondados, cabelo
+em mechas, luvas vermelhas, shorts preto/vermelho/branco e nove ações.
+O arquivo anterior fica em `lutador.glb.anterior` até a validação local.
 
 ## O dano
 
@@ -95,7 +90,8 @@ onde `forca` é a pontuação sobre o teto da escala. Na prática:
   PESO-PESADO, LENDÁRIO e SOCO PERFEITO — derrubam **no primeiro golpe**,
   independentemente do medidor.
 
-Quem cai levanta sozinho em 2,6 s, com o medidor voltando a 72%: a
+Quem cai permanece visível na lona e completa queda/levantamento em cerca
+de 5 s, com o medidor voltando a 72%: a
 rodada tem dois socos, e o segundo precisa ter para onde ir.
 
 **Cada rodada começa com o adversário inteiro.** Herdar o dano faria a
@@ -111,6 +107,7 @@ construída para custar pouco, não para impressionar em benchmark:
   cordas, fundo), com cor por vértice — um desenho em vez de trinta;
 - **três luzes**, nenhuma com sombra;
 - **os flashes da plateia num `MultiMesh`** — dezoito pontos, um desenho;
+- **dois emissores GPU reutilizados** para faíscas e poeira da lona;
 - **sem antisserrilhado, sem brilho, sem TAA**;
 - **a janela encolhe e cai para 30 Hz** quando o vigia de desempenho
   aperta (`Desempenho.qualidade < 0,55`). A interface 2D continua a 60;

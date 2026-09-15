@@ -219,7 +219,8 @@ Com o contador, o jogo:
   milhares de bytes quinze vezes por segundo;
 - detecta **imagem congelada com processo vivo** (a webcam trava sem
   devolver erro ao OpenCV, e a ponte fica republicando o mesmo quadro).
-  Três segundos com o contador parado e a ponte é religada;
+  dez segundos com o contador parado e três verificações consecutivas
+  iniciam uma única recuperação;
 - detecta **processo morto** e religa também. Antes a máquina só anunciava
   "desconectada" e ficava assim até alguém reiniciar o jogo — num salão,
   a noite inteira sem foto.
@@ -275,20 +276,26 @@ webcam é pior do que uma que não joga.
 **Central → CÂMERA → `EXIGE CÂMERA` / `JOGA SEM CÂMERA`** desliga a
 exigência, para bancada e manutenção. Padrão: exige.
 
-### 2. "Viva" quer dizer mudando
+### 2. A câmera é aprovada uma vez por sessão
 
-`CameraService.ao_vivo()` compara a assinatura do quadro (a mesma grade
-de 48 pontos que julga o contraste) leitura a leitura. Um sensor de
-verdade nunca entrega dois quadros idênticos — há ruído térmico até com
-a tampa na lente. Um buffer que ninguém preencheu entrega, byte por
-byte.
+Depois do primeiro quadro válido, `CameraService.pronta()` mantém a sessão
+aprovada entre IDLE, contagem, golpe, resultado, ranking e nova rodada.
+Essas transições não liberam a webcam e não repetem a validação.
+
+`CameraService.ao_vivo()` usa chegada de quadro no caminho nativo e avanço
+do contador no Python bridge. Portanto, uma pessoa imóvel ou uma cena
+escura não é confundida com webcam congelada.
 
 Daí saem, de graça:
 
-- **o vigia de congelamento**: imagem parada por 2,5 s com tudo
-  "funcionando" derruba e reabre a câmera sozinha;
+- **o vigia de saúde**: espera dez segundos, exige três falhas e respeita
+  cooldown de doze segundos antes de uma recuperação;
 - **a foto não sai de quadro congelado**: a pose só vira foto se tiver
   chegado quadro NOVO enquanto o obturador esteve aberto.
+
+Durante recuperação, a última textura continua desenhada. Apenas desligar
+na Central, trocar manualmente a câmera, entrar no diagnóstico ou fechar o
+aplicativo libera o dispositivo de propósito.
 
 ### 3. Escuro não é câmera quebrada
 

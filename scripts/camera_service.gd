@@ -162,9 +162,19 @@ var _obturador_ate_ms := 0
 ## contraste) é comparada leitura a leitura, e `ao_vivo()` responde pela
 ## IMAGEM, não pelo processo. Quem desenha pergunta antes, e quem
 ## fotografa também.
-const VIDA_MAXIMA_MS := 900
+## A sessão não perde a aprovação por uma oscilação curta. Webcams USB
+## baratas podem ficar vários segundos ajustando exposição sem terem sido
+## desconectadas. A prova de vida é a chegada do quadro/contador, não a
+## mudança visual dos pixels.
+const VIDA_MAXIMA_MS := 10000
 var _assinatura_do_quadro := 0
 var _ultima_mudanca_ms := 0
+var _sessao_aprovada := false
+var _falhas_de_saude := 0
+var _ultima_verificacao_de_saude_ms := 0
+const FALHAS_ANTES_DE_RECONECTAR := 3
+const INTERVALO_SAUDE_MS := 1200
+const COOLDOWN_RECONECTAR_MS := 12000
 ## Chegou quadro NOVO enquanto o obturador esteve aberto? É o que separa
 ## "a foto é desta pose" de "a foto é do quadro que estava congelado na
 ## tela quando a contagem zerou".
@@ -234,7 +244,13 @@ func terminar_exame() -> void:
 ## contagem começava, a pose corria e a foto saía, todas em cima de um
 ## quadro congelado. Ver `ao_vivo()`.
 func pronta() -> bool:
-	return estado == Estado.ACESA and ao_vivo()
+	# Depois da primeira prova, uma rodada nova não volta para a fila de
+	# validação. Uma recuperação em segundo plano mantém a sessão aprovada e
+	# a última textura na tela. Só desligamento, exame ou falha definitiva
+	# retiram a autorização.
+	return enabled and _sessao_aprovada and estado not in [
+		Estado.DESLIGADA, Estado.EXAME, Estado.PARADA,
+	]
 
 ## Uma frase curta do estado, para a tela da pose e para a Central.
 func estado_curto() -> String:
@@ -301,7 +317,7 @@ func _supervisionar(_delta: float) -> void:
 	# cada engasgo da webcam — e desligar o estado trava a contagem
 	# regressiva, que é como o atraso de meio segundo virava uma rodada
 	# inteira esperando.
-	elif _bridge_texture != null and Time.get_ticks_msec() - _last_frame_ms < 4000:
+	elif _sessao_aprovada or (_bridge_texture != null and ao_vivo()):
 		estado = Estado.ACESA
 	else:
 		estado = Estado.SUBINDO
@@ -321,21 +337,35 @@ func _supervisionar(_delta: float) -> void:
 ## engasgar trocando a exposição sem ser derrubada à toa, pouco o
 ## bastante para a pose de três segundos não correr inteira em cima de
 ## uma imagem morta.
-const CONGELAMENTO_MS := 2500
+const CONGELAMENTO_MS := 10000
 var _religou_por_congelamento_ms := 0
 
 func _vigiar_congelamento() -> void:
-	if estado != Estado.ACESA or _ultima_mudanca_ms <= 0:
+	if not enabled or estado in [Estado.DESLIGADA, Estado.EXAME, Estado.PARADA]:
 		return
 	var agora := Time.get_ticks_msec()
-	if agora - _ultima_mudanca_ms < CONGELAMENTO_MS:
+	if agora - _ultima_verificacao_de_saude_ms < INTERVALO_SAUDE_MS:
+		return
+	_ultima_verificacao_de_saude_ms = agora
+	if ao_vivo():
+		_falhas_de_saude = 0
+		return
+	# Antes do primeiro quadro deixamos o fluxo de abertura escolher nativa
+	# ou ponte. Este vigia cuida apenas de uma sessão que já funcionou.
+	if not _sessao_aprovada or _last_frame_ms <= 0:
+		return
+	if agora - _last_frame_ms < CONGELAMENTO_MS:
+		return
+	_falhas_de_saude += 1
+	if _falhas_de_saude < FALHAS_ANTES_DE_RECONECTAR:
 		return
 	# UMA RELIGADA DE CADA VEZ. Sem este freio, a religada seguinte
 	# começaria antes de a anterior ter tido chance de entregar o
 	# primeiro quadro, e a câmera nunca sairia do lugar.
-	if agora - _religou_por_congelamento_ms < 6000:
+	if agora - _religou_por_congelamento_ms < COOLDOWN_RECONECTAR_MS:
 		return
 	_religou_por_congelamento_ms = agora
+	_falhas_de_saude = 0
 	status = "IMAGEM CONGELADA — RELIGANDO A CÂMERA"
 	estado = Estado.SUBINDO
 	_assinatura_do_quadro = 0
@@ -358,6 +388,9 @@ func _atender_pedido() -> void:
 			# da imagem: em todo o resto ela é o que impede a tela de
 			# voltar ao boneco.
 			_ultima_textura = null
+			_bridge_texture = null
+			_last_image = null
+			_sessao_aprovada = false
 			estado = Estado.DESLIGADA
 			status = "CÂMERA DESATIVADA"
 		Pedido.EXAME_ENTRAR:
@@ -376,7 +409,7 @@ func _atender_pedido() -> void:
 			# ACESA NÃO SE MEXE. É a regra que faltava: uma câmera que
 			# está entregando imagem não é reconstruída porque alguém
 			# pediu "abre" — ela já está aberta.
-			if estado != Estado.ACESA:
+			if _feed == null and _bridge_pid <= 0:
 				_derrubar()
 				_riscados.clear()
 				_bridge_desistiu = false
@@ -463,8 +496,8 @@ func _vigiar_ponte() -> void:
 			_bridge_pid = -1
 			_start_bridge()
 			return
-		_bridge_texture = null
-		_last_image = null
+		# Processo morto: preserve a última textura enquanto o substituto
+		# sobe. A sessão só perde a imagem por desligamento explícito.
 		_bridge_pid = -1
 		_bridge_reinicios += 1
 		if _bridge_reinicios > MAX_RELIGAMENTOS:
@@ -488,15 +521,12 @@ func _vigiar_ponte() -> void:
 		# ponte nesse engasgo troca uma imagem parada por uma imagem
 		# AUSENTE, que é pior. Só é congelamento de verdade quando passa
 		# de meia dúzia de segundos.
-		if now - _bridge_contador_ms > 6000 and _bridge_texture != null:
+		if now - _bridge_contador_ms > CONGELAMENTO_MS and _bridge_texture != null:
 			# IMAGEM CONGELADA COM O PROCESSO VIVO. Acontece quando a
 			# webcam trava sem devolver erro ao OpenCV: a ponte fica
 			# publicando o mesmo quadro para sempre, e a prévia mostra
 			# uma foto antiga como se fosse ao vivo.
-			status = "IMAGEM CONGELADA — RELIGANDO A PONTE"
-			_bridge_reinicios += 1
-			_matar_ponte()
-			_start_bridge()
+			_vigiar_congelamento()
 		return
 	if contador >= 0:
 		# Quadro novo: a ponte está viva de verdade, e a conta de
@@ -720,6 +750,8 @@ func _registrar_quadro(imagem: Image, agora: int) -> void:
 			_obturador_teve_vida = true
 	_last_image = imagem
 	_last_frame_ms = agora
+	_sessao_aprovada = true
+	_falhas_de_saude = 0
 	_oferecer_ao_obturador(imagem, float(medida["nota"]))
 
 ## A IMAGEM ESTÁ MUDANDO AGORA?
@@ -728,9 +760,15 @@ func _registrar_quadro(imagem: Image, agora: int) -> void:
 ## processo está de pé). Esta é a pergunta que a tela da pose e a foto
 ## precisam fazer, e a única que o congelamento não consegue enganar.
 func ao_vivo() -> bool:
-	if not enabled or _ultima_mudanca_ms <= 0:
+	if not enabled or _last_frame_ms <= 0:
 		return false
-	return Time.get_ticks_msec() - _ultima_mudanca_ms <= VIDA_MAXIMA_MS
+	# Na ponte, contador avançando é autoridade mesmo que a cena e todos os
+	# pixels estejam parados. Na nativa, cada leitura válida atualiza
+	# `_last_frame_ms`. Isso elimina falsos congelamentos em ambientes
+	# estáticos ou escuros.
+	if _bridge_pid > 0 and _bridge_contador_ms > 0:
+		return Time.get_ticks_msec() - _bridge_contador_ms <= VIDA_MAXIMA_MS
+	return Time.get_ticks_msec() - _last_frame_ms <= VIDA_MAXIMA_MS
 
 ## Há quanto tempo a imagem é a mesma, em milissegundos. A Central mostra:
 ## uma câmera que congela a cada dez segundos é cabo ou driver, e o
@@ -793,6 +831,8 @@ func cycle_camera() -> void:
 	# índice: sem limpar, a ponte insistiria com `--fixo` num par
 	# índice/back-end que nunca foi testado junto.
 	backend_preferido = ""
+	_sessao_aprovada = false
+	_falhas_de_saude = 0
 	# Derruba de propósito: é a única ordem que quer a câmera reaberta
 	# mesmo estando acesa.
 	estado = Estado.SUBINDO
@@ -1016,12 +1056,11 @@ func _matar_ponte() -> void:
 	if _bridge_pid > 0:
 		OS.kill(_bridge_pid)
 	_bridge_pid = -1
-	_bridge_texture = null
-	_last_image = null
+	# A textura e a última imagem sobrevivem à recuperação. Assim a tela
+	# não pisca nem volta ao avatar enquanto um novo processo sobe.
 	_bridge_digest = 0
 	_bridge_contador = -1
 	_bridge_contador_ms = 0
-	_last_frame_ms = 0
 
 func _start_bridge() -> void:
 	if _bridge_pid > 0 or _bridge_desistiu:

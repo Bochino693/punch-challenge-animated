@@ -15,6 +15,20 @@ O lutador é um arquivo `.glb` de verdade (abre no Blender, troca sem
 programar). Como ele é feito, como trocá-lo, quanto custa numa TV Box e o
 que os testes guardam: **[`docs/ARENA.md`](docs/ARENA.md)**.
 
+## Gerar e testar o humanoide no Windows
+
+Instale Blender 4.2 ou superior e, na raiz do projeto, execute:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\gerar_personagem_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\testar_melhorias_windows.ps1 -PularGeracaoGLB
+```
+
+O primeiro comando cria `assets/personagem/lutador.glb` com uma malha
+skinned, 24 ossos e nove animações. O segundo reimporta o GLB, roda os
+testes e abre o editor para inspeção. Executáveis fora das pastas padrão
+podem ser informados pelos parâmetros `-Blender` e `-Godot`.
+
 O repositório original continua sendo a versão de referência: correção de
 sensor, de câmera ou de ranking deve entrar nos dois, e o código fora de
 `scripts/arena/` é igual de propósito para que isso continue possível.
@@ -50,7 +64,7 @@ mesma, só menor.
 ### Tema arena neon
 
 O jogo combina o azul e vermelho da Lazer & Sport com uma arena
-marinho/preta, painéis tecnológicos e luzes ciano, magenta, verde e âmbar.
+marinho/preta, painéis tecnológicos e luzes azul, vermelho, verde e âmbar.
 O contraste mantém o placar legível a distância e aproxima a apresentação
 das máquinas modernas de boxe com câmera e ranking visual.
 

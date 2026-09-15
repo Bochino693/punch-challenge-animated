@@ -52,6 +52,8 @@ var _rim_quente: OmniLight3D = null
 var _rim_frio: OmniLight3D = null
 var _flashes: MultiMeshInstance3D = null
 var _flash_fase: PackedFloat32Array = PackedFloat32Array()
+var _impacto_particulas: GPUParticles3D = null
+var _poeira_particulas: GPUParticles3D = null
 
 var _relogio := 0.0
 var _acumulado := 0.0
@@ -117,8 +119,8 @@ func _montar_mundo() -> void:
 	# vermelho de sumir dentro de um fundo preto e azul, e é o que dá ao
 	# quadro o ar de pôster de jogo de luta em vez de maquete.
 	_rim_quente = OmniLight3D.new()
-	_rim_quente.name = "ContornoMagenta"
-	_rim_quente.light_color = Color("ff2f8e")
+	_rim_quente.name = "ContornoVermelho"
+	_rim_quente.light_color = Color("ff1835")
 	_rim_quente.light_energy = 3.2
 	_rim_quente.omni_range = 7.5
 	_rim_quente.shadow_enabled = false
@@ -146,6 +148,7 @@ func _montar_mundo() -> void:
 	_mundo.add_child(ringue)
 
 	_montar_flashes()
+	_montar_particulas_de_impacto()
 
 ## TODA A ARENA NUMA MALHA SÓ.
 ##
@@ -236,6 +239,72 @@ func _montar_flashes() -> void:
 	_flashes.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_mundo.add_child(_flashes)
 
+## Partículas 3D ficam dentro do quadro da arena e usam poucos emissores.
+## A resolução visual vem do material aditivo e da variação de escala, não de
+## centenas de nós. Em qualidade baixa a quantidade cai automaticamente.
+func _montar_particulas_de_impacto() -> void:
+	var brilho := StandardMaterial3D.new()
+	brilho.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	brilho.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	brilho.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	brilho.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	brilho.albedo_color = Color("ffdc8a")
+	var estrela := QuadMesh.new()
+	estrela.size = Vector2(0.075, 0.20)
+	estrela.material = brilho
+	var processo := ParticleProcessMaterial.new()
+	processo.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	processo.emission_sphere_radius = 0.16
+	processo.direction = Vector3(0.0, 0.15, 1.0)
+	processo.spread = 78.0
+	processo.initial_velocity_min = 2.8
+	processo.initial_velocity_max = 7.2
+	processo.gravity = Vector3(0.0, -5.5, 0.0)
+	processo.scale_min = 0.45
+	processo.scale_max = 1.30
+	processo.color = Color("fff0bd")
+	_impacto_particulas = GPUParticles3D.new()
+	_impacto_particulas.name = "ParticulasImpacto"
+	_impacto_particulas.amount = 72
+	_impacto_particulas.lifetime = 0.72
+	_impacto_particulas.one_shot = true
+	_impacto_particulas.explosiveness = 0.96
+	_impacto_particulas.process_material = processo
+	_impacto_particulas.draw_pass_1 = estrela
+	_impacto_particulas.position = Vector3(0.0, 1.34, 0.36)
+	_impacto_particulas.emitting = false
+	_mundo.add_child(_impacto_particulas)
+
+	var po_mat := StandardMaterial3D.new()
+	po_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	po_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	po_mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	po_mat.albedo_color = Color(0.45, 0.52, 0.68, 0.32)
+	var disco := QuadMesh.new()
+	disco.size = Vector2(0.32, 0.18)
+	disco.material = po_mat
+	var po_processo := ParticleProcessMaterial.new()
+	po_processo.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	po_processo.emission_box_extents = Vector3(0.70, 0.04, 0.38)
+	po_processo.direction = Vector3(0.0, 1.0, 0.0)
+	po_processo.spread = 65.0
+	po_processo.initial_velocity_min = 0.45
+	po_processo.initial_velocity_max = 1.35
+	po_processo.gravity = Vector3(0.0, -0.7, 0.0)
+	po_processo.scale_min = 0.55
+	po_processo.scale_max = 1.65
+	_poeira_particulas = GPUParticles3D.new()
+	_poeira_particulas.name = "PoeiraDaLona"
+	_poeira_particulas.amount = 34
+	_poeira_particulas.lifetime = 1.35
+	_poeira_particulas.one_shot = true
+	_poeira_particulas.explosiveness = 0.88
+	_poeira_particulas.process_material = po_processo
+	_poeira_particulas.draw_pass_1 = disco
+	_poeira_particulas.position = Vector3(0.0, 0.08, -0.35)
+	_poeira_particulas.emitting = false
+	_mundo.add_child(_poeira_particulas)
+
 # ------------------------------------------------------------- o lutador
 ## Põe o lutador na lona. `cena` é o GLB já carregado; sem ele a arena
 ## continua funcionando (ringue vazio) em vez de derrubar o jogo.
@@ -267,6 +336,14 @@ func golpe(forca: float, derruba := false) -> Dictionary:
 	_tremor = clampf(0.35 + forca, 0.0, 1.35)
 	_clarao = clampf(0.4 + forca * 0.6, 0.0, 1.0)
 	_empurrao = forca
+	if _impacto_particulas != null:
+		_impacto_particulas.amount = int(lerpf(18.0, 86.0, forca) * (1.0 if qualidade >= 0.55 else 0.55))
+		_impacto_particulas.restart()
+		_impacto_particulas.emitting = true
+	if derruba and _poeira_particulas != null:
+		_poeira_particulas.amount = 34 if qualidade >= 0.55 else 18
+		_poeira_particulas.restart()
+		_poeira_particulas.emitting = true
 	if lutador == null:
 		return {"nocaute": false, "dano": 0.0}
 	return lutador.bater(forca, derruba)
