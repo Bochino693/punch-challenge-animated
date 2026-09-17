@@ -44,6 +44,13 @@ var _tranca_escrita := Mutex.new()
 var _recebidas: Array[String] = []
 var _parar := false
 
+## Telemetria pode chegar quatro vezes por segundo em três tipos de linha.
+## Se a câmera segurar o desenho, não faz sentido reproduzir depois todos
+## os estados antigos: interessa o último. HIT, BUTTON e mensagens de
+## conexão nunca são compactados.
+const FILA_MAXIMA := 512
+const LINHAS_COALESCIVEIS := ["TELEMETRY", "STATUS", "PINS", "PONG"]
+
 var _cano: FileAccess = null
 var _pid := -1
 var _apresentou := false
@@ -84,7 +91,12 @@ var _ja_falou := false
 ## O caminho do PowerShell que de fato serviu nesta maquina.
 var _programa_que_serviu := ""
 
-const ESPERA_ENTRE_ABERTURAS_MS := 700
+# O jogo já limita cada tentativa e só pede a seguinte depois de receber
+# FALHA/FECHADA. Este valor era 700 ms enquanto o jogo avançava após
+# 350 ms: a ponte recusava silenciosamente toda segunda COM e a busca
+# podia pular justamente o Arduino. Mantemos só proteção contra chamada
+# duplicada no mesmo instante.
+const ESPERA_ENTRE_ABERTURAS_MS := 100
 ## A PRIMEIRA PAUSA ENTRE DUAS TENTATIVAS DE SUBIR O AJUDANTE.
 ##
 ## Ela DOBRA a cada fracasso, ate o teto. E a diferenca entre uma falha
@@ -417,6 +429,11 @@ func _laco_leitor(geracao: int) -> void:
 		var linha := _somente_ascii(cano.get_line())
 		if not linha.is_empty():
 			_tranca.lock()
+			# Limite de segurança para uma câmera/driver que deixe o jogo
+			# suspenso por muito tempo. Remove primeiro diagnóstico antigo;
+			# nunca um golpe ou botão.
+			if _recebidas.size() >= FILA_MAXIMA:
+				_descartar_diagnostico_antigo()
 			_recebidas.append(linha)
 			_tranca.unlock()
 			continue
@@ -502,7 +519,10 @@ func nome_do_caminho() -> String:
 	return SerialLink.CAMINHO_PONTE
 
 func available() -> bool:
-	return _cano != null
+	# Cano criado não significa ajudante pronto. Antes desta condição o
+	# jogo tentava abrir a primeira COM enquanto o PowerShell ainda subia;
+	# `open_port` recusava e a fila avançava, pulando a porta sem testá-la.
+	return _cano != null and _apresentou
 
 ## A PONTE VAI TENTAR DE NOVO SOZINHA? Ver `SerialLink._tentar_caminho`.
 ##
@@ -560,12 +580,17 @@ func portas_promissoras() -> PackedStringArray:
 func open_port(port: String, baud: int = GameDef.SERIAL_BAUD) -> bool:
 	if _cano == null or not _apresentou or port.is_empty():
 		return false
+	# Uma chamada repetida para a COM que ja pertence a esta ponte nao
+	# envia outro @ABRIR, nao pulsa DTR e nao reinicia a placa.
+	if _porta == port or _abrindo == port:
+		return true
+	if is_open():
+		close_port()
 	# TENTAR SEM PARAR E PIOR DO QUE NAO TENTAR.
 	#
-	# Quando a porta recusa na hora (nao existe, ou outro programa esta
-	# com ela), o jogo pede a proxima no mesmo quadro -- e sem esta pausa
-	# ele varreria a lista inteira sessenta vezes por segundo, enchendo o
-	# cano de comandos e sem dar tempo de placa nenhuma responder.
+	# Quando duas chamadas chegam praticamente juntas, uma pausa mínima
+	# impede comandos duplicados. O ritmo normal da varredura pertence ao
+	# jogo e é maior que este limite; os dois relógios não podem competir.
 	var agora := Time.get_ticks_msec()
 	if agora - _ultima_abertura_ms < ESPERA_ENTRE_ABERTURAS_MS:
 		return false
@@ -639,7 +664,7 @@ func poll() -> void:
 	# nada (a morte e constatada no mesmo quadro, logo abaixo) e nao
 	# perde nada.
 	_tranca.lock()
-	var lote := _recebidas.duplicate()
+	var lote := _compactar_lote(_recebidas)
 	_recebidas.clear()
 	_tranca.unlock()
 	if not lote.is_empty():
@@ -701,6 +726,35 @@ func poll() -> void:
 		if agora2 >= _proxima_listagem_ms:
 			_proxima_listagem_ms = agora2 + ESPERA_ENTRE_LISTAGENS_MS
 			_escrever("@LISTAR")
+
+## Mantém eventos importantes na ordem original e reduz centenas de
+## amostras antigas a uma amostra atual de cada tipo. Os eventos entram
+## primeiro no lote, então um HIT nunca espera a câmera "reproduzir" uma
+## fila de telemetria atrasada.
+static func _compactar_lote(originais: Array[String]) -> Array[String]:
+	var importantes: Array[String] = []
+	var ultimas := {}
+	for linha in originais:
+		var cabeca := linha.get_slice(",", 0).strip_edges().to_upper()
+		if cabeca in LINHAS_COALESCIVEIS:
+			ultimas[cabeca] = linha
+		else:
+			importantes.append(linha)
+	for cabeca in LINHAS_COALESCIVEIS:
+		if ultimas.has(cabeca):
+			importantes.append(str(ultimas[cabeca]))
+	return importantes
+
+## Chamada sempre com `_tranca` adquirida. O teto é deliberadamente
+## flexível: se a fila inteira for de golpes e botões, ela pode crescer.
+## Perder um evento físico é pior do que guardar alguns bytes a mais.
+func _descartar_diagnostico_antigo() -> bool:
+	for i in range(_recebidas.size()):
+		var cabeca := _recebidas[i].get_slice(",", 0).strip_edges().to_upper()
+		if cabeca in LINHAS_COALESCIVEIS:
+			_recebidas.remove_at(i)
+			return true
+	return false
 
 func _digerir(linha: String) -> void:
 	if not linha.begins_with("#"):

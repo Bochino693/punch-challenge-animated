@@ -14,7 +14,6 @@ var _mgr: Object = null
 var _port := ""
 var _polling := false
 var _eventos: Array[Dictionary] = []
-
 func _init() -> void:
 	if not ClassDB.class_exists(&"GdSerialManager"):
 		return
@@ -148,11 +147,17 @@ func _chave(porta: String) -> String:
 func open_port(port: String, baud: int = GameDef.SERIAL_BAUD) -> bool:
 	if _mgr == null or port.is_empty():
 		return false
+	# Abrir a mesma sessao e uma operacao idempotente. Pulsar a COM de novo
+	# reinicia o Arduino pelo DTR e e exatamente o que nao pode acontecer
+	# entre START e HIT.
+	if _port == port:
+		return true
 	if is_open():
 		close_port()
 	# timeout 100 ms; modo 1 = MODE_LINE_BUFFERED (uma linha por evento).
 	if _mgr.open(port, baud, 100, 1):
 		_port = port
+		_sobras.clear()
 		opened.emit(_port)
 		return true
 	return false
@@ -161,13 +166,20 @@ func close_port() -> void:
 	# O meio de linha que ficou nao vale para a proxima porta.
 	_sobras.clear()
 	if _mgr != null and not _port.is_empty():
-		_mgr.close(_port)
 		var fechada := _port
+		# Perde a propriedade ANTES de pedir o fechamento. Algumas versoes
+		# da extensao emitem port_disconnected sincronicamente dentro de
+		# close(); limpar depois emitia `closed` duas vezes.
 		_port = ""
+		_mgr.close(fechada)
 		closed.emit(fechada)
 
 func is_open() -> bool:
-	return _mgr != null and not _port.is_empty() and bool(_mgr.is_open(_port))
+	# `_port` e o contrato de propriedade. Consultar `mgr.is_open()` a cada
+	# quadro introduzia um falso intervalo de porta fechada no Windows; o
+	# supervisor tentava abrir a mesma COM nesse intervalo e reiniciava a
+	# placa. O sinal port_disconnected e a unica transicao para fechado.
+	return _mgr != null and not _port.is_empty()
 
 func send_line(line: String) -> bool:
 	if not is_open():
@@ -261,5 +273,10 @@ func _on_disconnected(port: String) -> void:
 		return
 	if port != _port:
 		return
+	# Evento atrasado do fechamento anterior da MESMA COM. Se a sessao
+	# atual esta aberta no gerenciador, este evento nao pertence a ela.
+	if _mgr != null and bool(_mgr.is_open(port)):
+		return
 	_port = ""
+	_sobras.clear()
 	closed.emit(port)

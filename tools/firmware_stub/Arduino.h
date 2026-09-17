@@ -10,12 +10,15 @@ struct __FlashStringHelper;
 #define LOW 0
 #define INPUT_PULLUP 2
 #define OUTPUT 1
+#define A4 18
+#define A5 19
 #define DEG_TO_RAD 0.0174532925f
 #define F(x) (reinterpret_cast<const __FlashStringHelper *>(x))
 typedef uint8_t byte;
 unsigned long millis();
 unsigned long micros();
 void delay(unsigned long);
+void delayMicroseconds(unsigned int);
 void pinMode(int, int);
 void digitalWrite(int, int);
 int digitalRead(int);

@@ -45,12 +45,15 @@ chega esticada) e os testes.
 | arquivo | o que faz |
 |---|---|
 | `tools/gerar_personagem_blender.py` | gera o humanoide rigado, materiais e nove ações |
+| `tools/gerar_personagem_glb.py` | gera o lutador articulado leve, também com nove ações |
+| `GERAR_PERSONAGEM.bat` | atalho de dois cliques para o gerador Blender no Windows |
 | `tools/gerar_personagem_windows.ps1` | encontra o Blender e executa o gerador no Windows |
 | `assets/personagem/lutador.glb` | modelo carregado pelo jogo |
 | `scripts/arena/arena3d.gd` | o mundo 3D dentro do `SubViewport` |
-| `scripts/arena/lutador.gd` | integra Skeleton3D, skin e AnimationPlayer |
+| `scripts/arena/lutador.gd` | integra AnimationPlayer, com ou sem Skeleton3D/skin |
 | `scripts/arena/quadro.gd` | a moldura e as colunas de dano, em 2D |
 | `scripts/arena/frases.gd` | o que a máquina grita a cada nível |
+| `scripts/ranking_celebration.gd` | quatro cerimônias, conforme a colocação |
 | `tools/gerar_audio_arena.py` | o baque no corpo, a queda e a plateia |
 | `tests/test_arena.gd` | o que não pode voltar a quebrar |
 
@@ -74,14 +77,40 @@ Para gerar o humanoide no Windows, a partir da raiz do projeto:
 powershell -ExecutionPolicy Bypass -File .\tools\gerar_personagem_windows.ps1
 ```
 
-O resultado tem uma malha skinned, 24 ossos, volumes arredondados, cabelo
-em mechas, luvas vermelhas, shorts preto/vermelho/branco e nove ações.
+O resultado tem uma malha skinned, 24 ossos, guarda anatômica como pose
+de repouso, bíceps e antebraços com volume, olhos completos, sobrancelhas,
+boca, lábio e protetor bucal, cabelo em mechas, materiais PBR cartoon,
+luvas vermelhas, shorts preto/vermelho/branco e nove ações.
 O arquivo anterior fica em `lutador.glb.anterior` até a validação local.
+Na **Central Técnica → Operação**, o indicador `HUMANOIDE BLENDER`
+confirma que o jogo carregou de fato a versão rigada; `MODELO LEVE ATIVO`
+significa que ainda está usando o GLB de segurança incluído no ZIP.
+
+## Premiação e torcida
+
+A colocação escolhe uma receita própria em `RankingCelebration`:
+
+- **1º lugar:** selo de campeão, três canhões, chuva cheia e torcida longa;
+- **2º–3º:** cerimônia de pódio, dois canhões e torcida própria;
+- **4º–10º:** entrada no Top 10, um canhão e comemoração média;
+- **11º–20º:** reconhecimento curto, sem fingir que foi recorde.
+
+Os quatro sons são estéreo e combinam massa vocal, canto de arquibancada,
+palmas, assobios e reverberação de ginásio. O confete é atualizado no lugar
+e desenhado como uma fita de uma chamada, evitando a alocação e a
+triangulação que faziam a chuva engasgar.
+
+Abaixo de **6.000 pontos**, o adversário baixa a guarda, nega com a cabeça
+e desdenha, acompanhado por vaias e assobios próprios. Com 6.000 ou mais
+ele reconhece o golpe e reage fisicamente; caído na lona, nunca desdenha.
 
 ## O dano
 
 Cada soco tira `forca × 0,62` do adversário (`Lutador3D.DANO_POR_GOLPE`),
-onde `forca` é a pontuação sobre o teto da escala. Na prática:
+onde `forca` é a posição da velocidade real dentro da faixa calibrada.
+A nota continua usando o expoente competitivo, mas ele não achata a
+animação: golpe físico médio parece médio, mesmo com pontuação difícil.
+Na prática:
 
 - dois socos perfeitos derrubam;
 - um soco leve quase não mexe no medidor (e abaixo de 2% não conta,
@@ -106,15 +135,15 @@ construída para custar pouco, não para impressionar em benchmark:
 - **uma malha só** para todo o ringue (lona, borda, quatro postes, nove
   cordas, fundo), com cor por vértice — um desenho em vez de trinta;
 - **três luzes**, nenhuma com sombra;
-- **os flashes da plateia num `MultiMesh`** — dezoito pontos, um desenho;
+- **flashes e silhuetas da plateia em `MultiMesh`** — dois desenhos, com
+  reação proporcional à força;
 - **dois emissores GPU reutilizados** para faíscas e poeira da lona;
 - **sem antisserrilhado, sem brilho, sem TAA**;
-- **a janela encolhe e cai para 30 Hz** quando o vigia de desempenho
-  aperta (`Desempenho.qualidade < 0,55`). A interface 2D continua a 60;
-  num quadro de 800 pixels, metade da taxa no 3D não se vê;
-- **a janela só desenha nas telas do soco.** Na abertura, na contagem,
-  na tabela de recordes e na Central o mundo 3D não é calculado nenhuma
-  vez (`main.gd::_arena_no_ar`).
+- **a janela encolhe** quando o vigia de desempenho aperta
+  (`Desempenho.qualidade < 0,55`), mas continua atualizando em todo quadro;
+- **a janela só desenha nas telas da rodada.** Liga no 3–2–1, permanece
+  até o resultado e desliga na abertura, na tabela e na Central
+  (`main.gd::_arena_no_ar`).
 
 Para medir na máquina de destino:
 

@@ -18,6 +18,7 @@ extends SceneTree
 class LinkFalso extends SerialLink:
 	var vezes_polled := 0
 	var vezes_aberto := 0
+	var vezes_fechado := 0
 	var esta_disponivel := true
 	var confirma_abertura := true
 	var portas := PackedStringArray(["COMBOA"])
@@ -49,6 +50,7 @@ class LinkFalso extends SerialLink:
 		var qual := ultima_porta
 		ultima_porta = ""
 		if not qual.is_empty():
+			vezes_fechado += 1
 			closed.emit(qual)
 
 	func send_line(_line: String) -> bool:
@@ -72,8 +74,8 @@ func run() -> void:
 	root.add_child(jogo)
 	await process_frame
 	jogo.set_process(false)
-	# A câmera não entra nesta prova, e sem isto ela fica pedindo um
-	# Python com OpenCV que a máquina de teste não tem.
+	# A câmera não entra nesta prova; desligá-la mantém o teste dedicado
+	# exclusivamente à comunicação serial.
 	if jogo.camera_service != null:
 		jogo.camera_service.set_process(false)
 		jogo.camera_service.set_enabled(false)
@@ -85,6 +87,12 @@ func run() -> void:
 	_test_paciencia_conta_da_confirmacao()
 	_test_troca_de_caminho_espera_a_volta_fechar()
 	_test_fila_gira_e_nao_repete()
+	_test_hit_fura_fila_de_telemetria()
+	_test_ponte_nao_pula_portas_da_busca()
+	_test_start_exige_mpu_e_sinal_atual()
+	_test_ready_fixa_a_com_durante_calibracao()
+	_test_rodada_mantem_uma_unica_sessao_serial()
+	_test_quedas_repetidas_revogam_o_caminho()
 	await _test_a_ponte_ressuscita_sozinha()
 	_test_despedida_velha_nao_mata_ajudante_novo()
 	await _test_a_central_desenha_o_diagnostico()
@@ -198,7 +206,7 @@ func _test_varredura_cega_cobre_o_sistema() -> void:
 	var fila: PackedStringArray = jogo._fila_de_tentativas()
 	match OS.get_name():
 		"Windows":
-			assert(fila.has("COM1") and fila.has("COM5") and fila.has("COM32"))
+			assert(fila.has("COM1") and fila.has("COM32") and fila.has("COM64"))
 		"Linux":
 			assert(fila.has("/dev/ttyACM0") and fila.has("/dev/ttyUSB0"))
 		_:
@@ -331,7 +339,136 @@ func _test_fila_gira_e_nao_repete() -> void:
 	assert(jogo._cega_liberada)
 
 # ----------------------------------------------------------------------
-#  7. A PONTE RESSUSCITA SOZINHA
+#  7. O GOLPE NAO ESPERA A FILA DA CAMERA
+# ----------------------------------------------------------------------
+#
+# Se o driver de video segura alguns quadros, TELEMETRY, STATUS e PINS se
+# acumulam. Reproduzir depois todas as amostras antigas antes de HIT faz
+# um soco parecer perdido. A ponte deve conservar cada evento de jogo,
+# reduzir somente diagnosticos repetidos e entregar os eventos primeiro.
+func _test_hit_fura_fila_de_telemetria() -> void:
+	var lote: Array[String] = [
+		"TELEMETRY,velha",
+		"STATUS,velho",
+		"PINS,1,0",
+		"TELEMETRY,nova",
+		"HIT,4.20,8.0,80,X",
+		"BUTTON,START",
+		"STATUS,novo",
+		"PINS,0,1",
+	]
+	var compacto := PonteProcessoLink._compactar_lote(lote)
+	assert(compacto[0].begins_with("HIT,"))
+	assert(compacto[1] == "BUTTON,START")
+	assert(compacto.count("TELEMETRY,nova") == 1)
+	assert(not compacto.has("TELEMETRY,velha"))
+	assert(compacto.has("STATUS,novo"))
+	assert(not compacto.has("STATUS,velho"))
+	assert(compacto.has("PINS,0,1"))
+	assert(not compacto.has("PINS,1,0"))
+
+func _test_ponte_nao_pula_portas_da_busca() -> void:
+	# O jogo agenda a COM cega seguinte em 150 ms. A ponte antiga exigia
+	# 700 ms e recusava toda segunda tentativa sem sequer mandá-la ao
+	# PowerShell. O limitador interno só pode proteger o mesmo instante.
+	assert(PonteProcessoLink.ESPERA_ENTRE_ABERTURAS_MS <= 150)
+
+# ----------------------------------------------------------------------
+#  8. PORTA ABERTA NAO VENDE PARTIDA SEM MPU
+# ----------------------------------------------------------------------
+func _test_start_exige_mpu_e_sinal_atual() -> void:
+	var falso := LinkFalso.new()
+	_por_link(falso)
+	falso.open_port("COMBOA")
+	jogo.camera_obrigatoria = false
+	jogo.game_mode = "free"
+	jogo.state = GameDef.State.IDLE
+	jogo.sensor_presente = false
+	jogo._on_serial_line("PONG")
+	assert(jogo.placa_respondeu)
+	assert(not jogo._sensor_ligado())
+	jogo._iniciar_rodada()
+	assert(jogo.state == GameDef.State.IDLE)
+	assert("SENSOR" in jogo.motivo_da_recusa())
+
+	# CALIBRATED só pode existir depois de o MPU entregar amostras. Isto
+	# cobre também o firmware V9 anterior, sem OK,MPU no primeiro boot.
+	jogo._on_serial_line("CALIBRATED,0.0,0.0,1.0")
+	assert(jogo._sensor_ligado())
+	assert(jogo.porta_serial_conhecida == "COMBOA")
+	assert(jogo.caminho_serial_conhecido == SerialLink.CAMINHO_NATIVO)
+	jogo._iniciar_rodada()
+	assert(jogo.state == GameDef.State.COUNTDOWN)
+	jogo.state = GameDef.State.IDLE
+	jogo.camera_obrigatoria = true
+
+func _test_ready_fixa_a_com_durante_calibracao() -> void:
+	var falso := LinkFalso.new()
+	_por_link(falso)
+	falso.open_port("COM3")
+	jogo.sensor_presente = false
+	jogo._on_serial_line("READY,PUNCH_MPU6050,V10")
+	assert(jogo.porta_arduino_identificada == "COM3")
+	assert(jogo.porta_serial_conhecida == "COM3")
+	assert(jogo.placa_calibrando)
+	jogo._on_serial_line("CALIBRATING,70")
+	assert(jogo.progresso_calibracao == 70)
+	assert(not jogo._sensor_ligado())
+	falso.close_port()
+	assert(jogo._porta_da_vez == 0)
+	assert(jogo.porta_serial_conhecida == "COM3")
+
+func _test_rodada_mantem_uma_unica_sessao_serial() -> void:
+	var falso := LinkFalso.new()
+	_por_link(falso)
+	falso.open_port("COM3")
+	jogo.porta_atual = "COM3"
+	jogo._porta_confirmada = true
+	jogo.central_aberta = false
+	jogo.state = GameDef.State.COUNTDOWN
+	jogo._on_serial_line("CALIBRATED,0.0,0.0,1.0")
+
+	# Uma troca de backend que ficou pendente antes do START nao pode
+	# destruir a COM no meio da rodada.
+	jogo._troca_de_caminho_pendente = true
+	jogo._poll_serial(0.016)
+	assert(jogo._troca_de_caminho_pendente)
+	assert(falso.is_open())
+	assert(falso.vezes_aberto == 1)
+	assert(falso.vezes_fechado == 0)
+
+	# Nem o relogio de silencio abre um segundo dono da porta durante a
+	# contagem. A recuperacao fica para a abertura seguinte.
+	jogo._troca_de_caminho_pendente = false
+	jogo.ultimo_sinal_ms = Time.get_ticks_msec() - jogo.SERIAL_SILENCIO_EM_JOGO_MS - 1000
+	jogo._poll_serial(0.016)
+	assert(falso.is_open())
+	assert(falso.vezes_aberto == 1)
+	assert(falso.vezes_fechado == 0)
+	jogo.ultimo_sinal_ms = Time.get_ticks_msec()
+	jogo.state = GameDef.State.IDLE
+
+# ----------------------------------------------------------------------
+#  9. UM CAMINHO QUE OSCILA DEIXA DE SER 'PROVADO'
+# ----------------------------------------------------------------------
+func _test_quedas_repetidas_revogam_o_caminho() -> void:
+	var falso := LinkFalso.new()
+	_por_link(falso)
+	jogo._quedas_do_caminho.clear()
+	jogo._troca_de_caminho_pendente = false
+	for _i in range(jogo.QUEDAS_ATE_TROCAR_CAMINHO):
+		falso.open_port("COMBOA")
+		jogo._on_serial_line("PONG")
+		falso.close_port()
+	assert(jogo._troca_de_caminho_pendente)
+	assert(not jogo._caminho_provado)
+	# O teste prova a decisao; não executa a troca, que subiria outro
+	# backend e tiraria o restante da suíte do ambiente falso.
+	jogo._troca_de_caminho_pendente = false
+	jogo._quedas_do_caminho.clear()
+
+# ----------------------------------------------------------------------
+#  10. A PONTE RESSUSCITA SOZINHA
 # ----------------------------------------------------------------------
 #
 #  Com o ajudante caído, `poll()` tem de subir outro. Este teste usa um
@@ -347,7 +484,9 @@ func _test_a_ponte_ressuscita_sozinha() -> void:
 		[ProjectSettings.globalize_path(suicida)], ["/bin/sh"]
 	]
 	var ponte := PonteProcessoLink.new()
-	assert(ponte.available())
+	# O cano pode nascer antes de o ajudante se apresentar; isto não é
+	# ainda disponibilidade para abrir COM.
+	assert(ponte._cano != null)
 
 	# Ele fala, morre, e a ponte sobe outro. Duas ressurreições provam que
 	# não é sorte: prova que o batimento continua depois da primeira.
@@ -379,7 +518,7 @@ func _test_a_ponte_ressuscita_sozinha() -> void:
 	]
 
 # ----------------------------------------------------------------------
-#  8. A DESPEDIDA DO AJUDANTE VELHO NÃO MATA O NOVO
+#  11. A DESPEDIDA DO AJUDANTE VELHO NÃO MATA O NOVO
 # ----------------------------------------------------------------------
 #
 #  O DEFEITO, e o mais cruel de todos: ao derrubar o ajudante, a thread
@@ -390,6 +529,7 @@ func _test_a_ponte_ressuscita_sozinha() -> void:
 #  palavra, e na tela ficava "PROCURANDO ARDUINO…" a noite inteira.
 func _test_despedida_velha_nao_mata_ajudante_novo() -> void:
 	var ponte := PonteProcessoLink.new()
+	ponte._digerir("#PONTE,V1,teste")
 	assert(ponte.available())
 	var geracao_velha: int = ponte._geracao
 	ponte._derrubar()
@@ -398,6 +538,7 @@ func _test_despedida_velha_nao_mata_ajudante_novo() -> void:
 	# E mesmo que uma despedida velha apareça atrasada, ela é ignorada:
 	# derrubar o de agora por causa da morte do de antes é o laço.
 	ponte._subir()
+	ponte._digerir("#PONTE,V1,teste")
 	assert(ponte.available())
 	assert(ponte._geracao > geracao_velha)
 	ponte._digerir("#MORREU,%d" % geracao_velha)
@@ -408,7 +549,7 @@ func _test_despedida_velha_nao_mata_ajudante_novo() -> void:
 	ponte.encerrar()
 
 # ----------------------------------------------------------------------
-#  9. A CENTRAL DESENHA O DIAGNÓSTICO INTEIRO, EM QUALQUER ESTADO
+#  12. A CENTRAL DESENHA O DIAGNÓSTICO INTEIRO, EM QUALQUER ESTADO
 # ----------------------------------------------------------------------
 #
 #  A página de diagnóstico é o que o técnico lê ao telefone, e ela é

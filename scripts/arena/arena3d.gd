@@ -24,12 +24,11 @@ extends SubViewport
 ##   • sem antisserrilhado, sem sombra, sem brilho — três luzes e pronto;
 ##   • toda a arena (lona, postes, cordas, fundo) é UMA malha só, com
 ##     cor por vértice: um desenho, e não trinta;
-##   • quando o vigia de desempenho aperta, a janela encolhe e passa a
-##     desenhar em 30 quadros por segundo em vez de 60. O lutador
-##     continua reagindo no mesmo tempo — só a imagem dele é que atualiza
-##     na metade da taxa, e num quadro de 800 pixels isso não se vê.
-##   • e ela só liga nas telas em que aparece. Na abertura, na contagem e
-##     na tabela de recordes o mundo 3D não é desenhado nenhuma vez.
+##   • quando o vigia de desempenho aperta, a janela encolhe, mas continua
+##     acompanhando cada quadro do jogo — movimento não vira apresentação
+##     de slides para economizar pixels;
+##   • ela só liga nas telas em que aparece. Fica viva do 3–2–1 ao
+##     resultado e desliga na abertura e na tabela de recordes.
 
 const TAMANHO_CHEIO := Vector2i(576, 645)
 const TAMANHO_MAGRO := Vector2i(384, 430)
@@ -52,18 +51,20 @@ var _rim_quente: OmniLight3D = null
 var _rim_frio: OmniLight3D = null
 var _flashes: MultiMeshInstance3D = null
 var _flash_fase: PackedFloat32Array = PackedFloat32Array()
+var _torcida: MultiMeshInstance3D = null
+var _torcida_base: Array[Vector3] = []
 var _impacto_particulas: GPUParticles3D = null
 var _poeira_particulas: GPUParticles3D = null
 
 var _relogio := 0.0
-var _acumulado := 0.0
 var _tremor := 0.0
 var _clarao := 0.0
 var _empurrao := 0.0
+var _publico := 0.0
 var _ativa := false
 var _magra := false
 
-## 1.0 = tudo; abaixo de 0,55 a janela encolhe e a taxa cai pela metade.
+## 1.0 = tudo; abaixo de 0,55 a janela encolhe, preservando a taxa de quadros.
 var qualidade := 1.0
 
 func _ready() -> void:
@@ -148,6 +149,7 @@ func _montar_mundo() -> void:
 	_mundo.add_child(ringue)
 
 	_montar_flashes()
+	_montar_torcida()
 	_montar_particulas_de_impacto()
 
 ## TODA A ARENA NUMA MALHA SÓ.
@@ -162,6 +164,14 @@ func _malha_do_ringue() -> ArrayMesh:
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	# fundo do ginásio: um painel escuro e um chão abaixo da lona
 	_caixa(st, Vector3(0.0, 2.2, -4.2), Vector3(14.0, 7.0, 0.3), COR_FUNDO)
+	# Três degraus luminosos separam arquibancada, parede e teto. Além de
+	# dar profundidade ao fundo, fornecem linhas de perspectiva estáveis
+	# para o personagem não parecer flutuar num painel plano.
+	_caixa(st, Vector3(0.0, 0.48, -3.92), Vector3(9.4, 0.18, 0.42), Color("18243b"))
+	_caixa(st, Vector3(0.0, 1.05, -4.02), Vector3(10.4, 0.16, 0.38), Color("361426"))
+	_caixa(st, Vector3(0.0, 1.62, -4.10), Vector3(11.4, 0.14, 0.32), Color("153246"))
+	_caixa(st, Vector3(0.0, 2.65, -4.00), Vector3(5.8, 0.07, 0.18), Color("e43845"))
+	_caixa(st, Vector3(0.0, 2.82, -4.00), Vector3(3.7, 0.05, 0.17), Color("35ccec"))
 	_caixa(st, Vector3(0.0, -0.9, -0.4), Vector3(14.0, 0.3, 9.0), Color("060810"))
 	# a lona e a saia do ringue
 	_caixa(st, Vector3(0.0, -0.06, 0.0), Vector3(4.6, 0.12, 4.6), COR_LONA)
@@ -238,6 +248,61 @@ func _montar_flashes() -> void:
 	_flashes.material_override = tinta
 	_flashes.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_mundo.add_child(_flashes)
+
+## Silhuetas baratas dão corpo à arquibancada. Todas compartilham a mesma
+## malha e reagem ao impacto sem criar dezenas de nós ou chamadas de desenho.
+func _montar_torcida() -> void:
+	var quantos := 30
+	var malha := _malha_silhueta_torcida()
+	var tinta := StandardMaterial3D.new()
+	tinta.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	tinta.vertex_color_use_as_albedo = true
+	tinta.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = malha
+	mm.instance_count = quantos
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 6932026
+	for i in range(quantos):
+		var fila := i % 3
+		var base := Vector3(
+			rng.randf_range(-3.6, 3.6),
+			0.72 + float(fila) * 0.42 + rng.randf_range(-0.06, 0.06),
+			-3.82 + float(fila) * 0.28
+		)
+		_torcida_base.append(base)
+		var t := Transform3D()
+		t.origin = base
+		mm.set_instance_transform(i, t)
+		var paleta := [Color("28324b"), Color("591f32"), Color("1d4650"), Color("59421f")]
+		mm.set_instance_color(i, paleta[i % paleta.size()])
+	_torcida = MultiMeshInstance3D.new()
+	_torcida.name = "Torcida"
+	_torcida.multimesh = mm
+	_torcida.material_override = tinta
+	_torcida.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_mundo.add_child(_torcida)
+
+## Cabeça + ombros em uma única malha plana. O retângulo antigo fazia a
+## arquibancada parecer uma grade; esta forma continua custando um único
+## MultiMesh e é reconhecida como pessoa até na resolução reduzida.
+func _malha_silhueta_torcida() -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var pontos := [
+		Vector3(-0.16, -0.27, 0.0), Vector3(0.16, -0.27, 0.0),
+		Vector3(0.13, 0.04, 0.0), Vector3(0.075, 0.12, 0.0),
+		Vector3(0.07, 0.24, 0.0), Vector3(0.0, 0.30, 0.0),
+		Vector3(-0.07, 0.24, 0.0), Vector3(-0.075, 0.12, 0.0),
+		Vector3(-0.13, 0.04, 0.0),
+	]
+	for tri in [[0, 1, 2], [0, 2, 8], [8, 2, 3], [8, 3, 7], [7, 3, 4], [7, 4, 6], [6, 4, 5]]:
+		for indice in tri:
+			st.set_color(Color.WHITE)
+			st.add_vertex(pontos[indice])
+	return st.commit()
 
 ## Partículas 3D ficam dentro do quadro da arena e usam poucos emissores.
 ## A resolução visual vem do material aditivo e da variação de escala, não de
@@ -320,6 +385,9 @@ func instalar(cena: PackedScene) -> bool:
 	lutador.montar(corpo as Node3D)
 	return true
 
+func modelo_avancado() -> bool:
+	return lutador != null and lutador.tem_esqueleto()
+
 # ---------------------------------------------------------------- ritmo
 func ligar(ativa: bool) -> void:
 	if _ativa == ativa:
@@ -332,10 +400,11 @@ func ativa() -> bool:
 	return _ativa
 
 ## O SOCO CHEGOU NA ARENA. Devolve o que o corpo fez com ele.
-func golpe(forca: float, derruba := false) -> Dictionary:
+func golpe(forca: float, derruba := false, pontos := -1) -> Dictionary:
 	_tremor = clampf(0.35 + forca, 0.0, 1.35)
 	_clarao = clampf(0.4 + forca * 0.6, 0.0, 1.0)
 	_empurrao = forca
+	_publico = maxf(_publico, clampf(0.08 + forca * (1.15 if derruba else 0.85), 0.0, 1.0))
 	if _impacto_particulas != null:
 		_impacto_particulas.amount = int(lerpf(18.0, 86.0, forca) * (1.0 if qualidade >= 0.55 else 0.55))
 		_impacto_particulas.restart()
@@ -345,14 +414,21 @@ func golpe(forca: float, derruba := false) -> Dictionary:
 		_poeira_particulas.restart()
 		_poeira_particulas.emitting = true
 	if lutador == null:
-		return {"nocaute": false, "dano": 0.0}
-	return lutador.bater(forca, derruba)
+		return {"nocaute": false, "dano": 0.0, "reacao": "", "desdenhou": false}
+	var resposta := lutador.bater(forca, derruba, pontos)
+	if bool(resposta.get("desdenhou", false)):
+		# Uma onda curta na arquibancada acompanha o gesto do lutador. É
+		# uma reação legível, mas menor que a explosão de um nocaute.
+		_publico = maxf(_publico, 0.66)
+		_clarao = maxf(_clarao, 0.28)
+	return resposta
 
 func preparar() -> void:
 	if lutador != null:
 		lutador.preparar()
 	_tremor = 0.0
 	_clarao = 0.0
+	_publico = 0.0
 
 func guardar(ativo: bool) -> void:
 	if lutador != null:
@@ -371,22 +447,17 @@ func avancar(delta: float) -> void:
 	_tremor = maxf(0.0, _tremor - delta * 2.2)
 	_clarao = maxf(0.0, _clarao - delta * 2.4)
 	_empurrao = maxf(0.0, _empurrao - delta * 1.6)
+	_publico = maxf(0.0, _publico - delta * 0.72)
 	if lutador != null:
 		lutador.atualizar(delta)
 	_camera()
 	_luzes()
 	_piscar()
-	# A JANELA SÓ DESENHA QUANDO PRECISA.
-	#
-	# `UPDATE_ALWAYS` deixaria o mundo 3D redesenhando a 60 Hz mesmo com o
-	# jogo apertado. Pedindo um quadro de cada vez, a arena pode andar a
-	# 30 Hz num aparelho fraco enquanto a interface 2D continua a 60 — e é
-	# a interface que a pessoa lê.
-	var intervalo := 1.0 / 62.0 if qualidade >= 0.55 else 1.0 / 31.0
-	_acumulado += delta
-	if _acumulado >= intervalo:
-		_acumulado = 0.0
-		render_target_update_mode = SubViewport.UPDATE_ONCE
+	_animar_torcida()
+	# A resolução ainda se adapta ao PC, mas a arena recebe um quadro em
+	# cada quadro do jogo. Cortá-la artificialmente para 30 Hz fazia o
+	# personagem parecer travado mesmo quando a interface seguia lisa.
+	render_target_update_mode = SubViewport.UPDATE_ONCE
 	_ajustar_tamanho()
 
 func _ajustar_tamanho() -> void:
@@ -452,3 +523,15 @@ func _piscar() -> void:
 		# dentro da arena. Escurecendo a COR, apagado é preto, e preto
 		# somado não muda pixel nenhum.
 		mm.set_instance_color(i, Color(a, a * 0.96, a * 0.88, 1.0))
+
+func _animar_torcida() -> void:
+	if _torcida == null:
+		return
+	var mm := _torcida.multimesh
+	for i in range(mm.instance_count):
+		var t := Transform3D()
+		var onda := maxf(0.0, sin(_relogio * (7.0 + _publico * 4.0) + float(i) * 1.73))
+		var energia := _publico * (0.10 + 0.16 * onda)
+		t.origin = _torcida_base[i] + Vector3(0.0, energia, 0.0)
+		t.basis = Basis.from_euler(Vector3(0.0, 0.0, sin(_relogio * 5.0 + i) * _publico * 0.08))
+		mm.set_instance_transform(i, t)

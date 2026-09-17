@@ -17,7 +17,9 @@ que os testes guardam: **[`docs/ARENA.md`](docs/ARENA.md)**.
 
 ## Gerar e testar o humanoide no Windows
 
-Instale Blender 4.2 ou superior e, na raiz do projeto, execute:
+O ZIP já inclui o lutador leve com as nove animações. Para recriar a
+versão humanoide de alta definição, instale Blender 4.2 ou superior e dê
+dois cliques em `GERAR_PERSONAGEM.bat`. O equivalente no terminal é:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\gerar_personagem_windows.ps1
@@ -28,6 +30,12 @@ O primeiro comando cria `assets/personagem/lutador.glb` com uma malha
 skinned, 24 ossos e nove animações. O segundo reimporta o GLB, roda os
 testes e abre o editor para inspeção. Executáveis fora das pastas padrão
 podem ser informados pelos parâmetros `-Blender` e `-Godot`.
+
+Depois da geração, abra **Central Técnica → Operação**. O quadro do
+personagem deve mostrar **HUMANOIDE BLENDER • TEXTURA CARTOON**. Se
+mostrar **MODELO LEVE ATIVO**, o GLB novo ainda não foi reimportado; feche
+e reabra o Godot. O gerador tenta fazer essa importação automaticamente
+quando encontra o executável do editor na pasta Downloads.
 
 O repositório original continua sendo a versão de referência: correção de
 sensor, de câmera ou de ranking deve entrar nos dois, e o código fora de
@@ -97,13 +105,15 @@ parecia defeito. Agora a tela de arranque do Godot usa o mesmo selo e o
 mesmo chão escuro, então o arranque e a entrada são a mesma coisa
 continuando.
 
-**O que voa não é confete.** Um retângulo girando é festa de
+**No impacto, o que voa não é confete.** Um retângulo girando é festa de
 aniversário; o que sai de uma pancada é brasa, e brasa tem rastro. A
-comemoração é feita de brasas explodindo do ponto do impacto, raios
+comemoração do golpe é feita de brasas explodindo do ponto do impacto, raios
 girando junto e anéis em sequência — mais um ESTRELÃO de história em
 quadrinhos que abre no lugar do golpe, com rachaduras e riscos
 convergindo. Ele dura quatro décimos de segundo e é o desenho que diz
-"bateu" antes de qualquer número aparecer.
+"bateu" antes de qualquer número aparecer. O papel picado fica reservado
+à premiação do ranking, onde campeão, pódio, Top 10 e Top 20 recebem
+cerimônias e torcidas diferentes.
 
 **A tela de jogo tem três papéis de texto, e só três.** Título (letreiro
 com contorno, o mesmo da abertura), rótulo (26 px, o que nomeia um
@@ -322,17 +332,17 @@ Sem a extensão serial, ou sem Arduino, o jogo continua funcionando em
 
 ### Câmera no Windows
 
-O `CameraServer` do Godot não fornece webcam no Windows. Por isso o projeto
-inclui `tools/camera_bridge.py`, uma ponte local por OpenCV. Instale uma vez:
+O projeto inclui `CameraServerExtension`, que captura a webcam diretamente
+pelo **Windows Media Foundation**. Não é preciso instalar Python, OpenCV,
+driver virtual ou serviço separado: conecte uma câmera USB e abra o jogo.
+Se ela for conectada depois, a busca automática a encontra; o botão
+**PROCURAR DE NOVO** força uma nova enumeração imediatamente.
 
-```powershell
-py -m pip install -r tools/requirements-camera.txt
-```
-
-O jogo inicia e encerra a ponte automaticamente. As imagens ficam somente
-em `user://ranking_photos`; não há envio para internet nem reconhecimento
-facial. Sem Python, OpenCV, permissão ou webcam, aparece um avatar e todo o
-restante do jogo continua funcionando.
+O feed fica aberto e a prévia usa a textura nativa continuamente. Só o
+retrato capturado é congelado por um instante; a câmera não é fechada nem
+reaberta a cada foto. As imagens ficam somente em `user://ranking_photos`;
+não há envio para internet nem reconhecimento facial. O PowerShell é usado
+apenas pelo diagnóstico de dispositivos e privacidade do Windows.
 
 ## Central Técnica (F9)
 
@@ -379,8 +389,9 @@ cliente forte zeraria o desafio na primeira noite.
 
 Salvando, os valores vão para a máquina **e** para o firmware do sensor.
 
-Parâmetros de fábrica: mínima `1,2 m/s`, máxima `16,0 m/s`, zona morta
-`8 %`, expoente `γ 2,80`.
+Parâmetros de fábrica: mínima `0,30 m/s`, máxima `5,20 m/s`, sem zona
+morta adicional e expoente `γ 2,20`. Esses valores coincidem com o
+firmware atual; para cada montagem, prefira o assistente acima.
 
 ## Teste sem Arduino
 
@@ -422,11 +433,10 @@ use **Projeto → Exportar → Windows Desktop**. O executável será criado em
 `build/PunchChallenge.exe` com o pacote incorporado.
 
 **Leve a pasta inteira para a outra máquina, não só o `.exe`.** O pacote
-do jogo vai dentro do executável, mas a extensão serial `gdserial.dll`
-não pode ir: uma biblioteca nativa não roda de dentro de um `.pck`, e o
-Godot a exporta **ao lado** do executável. Copiando só o `.exe`, a
-extensão fica para trás — o jogo continua funcionando (a ponte assume),
-mas pelo caminho lento.
+do jogo vai dentro do executável, mas as extensões nativas da serial e da
+câmera precisam acompanhar a exportação. O Godot coloca `gdserial.dll` e
+`libcameraserver-extension.windows.dll` ao lado da distribuição. Copiando
+só o `.exe`, o Arduino ou a câmera podem não funcionar.
 
 Pela mesma razão vale instalar, uma vez por máquina, o **Microsoft
 Visual C++ 2015-2022 Redistributable (x64)**: o `gdserial.dll` depende

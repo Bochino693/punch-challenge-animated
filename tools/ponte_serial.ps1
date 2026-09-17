@@ -74,6 +74,29 @@ function Dizer([string]$texto) {
     try { $saida.WriteLine($texto) } catch { }
 }
 
+# UMA PONTE POR SESSAO DO WINDOWS.
+#
+# Dois jogos abertos, ou um ajudante antigo que ainda esta encerrando,
+# nao podem disputar a mesma COM. SerialPort ja recusaria a segunda
+# abertura, mas cada processo continuaria tentando e pulsando DTR em
+# momentos diferentes. O mutex torna a propriedade atomica: exatamente
+# um processo pode chegar ao Arduino; quando ele termina ou e morto pelo
+# Windows, o sistema libera a trava automaticamente.
+$script:mutexSerial = $null
+$script:possuiMutexSerial = $false
+try {
+    $script:mutexSerial = New-Object System.Threading.Mutex($false, "Local\LazerSport.PunchChallenge.SerialBridge")
+    try {
+        $script:possuiMutexSerial = $script:mutexSerial.WaitOne(0)
+    } catch [System.Threading.AbandonedMutexException] {
+        $script:possuiMutexSerial = $true
+    }
+} catch { }
+if (-not $script:possuiMutexSerial) {
+    Dizer "#ERRO,outra ponte do jogo ja possui a conexao serial"
+    exit 3
+}
+
 # A APRESENTACAO E A PRIMEIRA COISA QUE SAI, ANTES DE QUALQUER TRABALHO.
 #
 # Ela ficava depois do `Add-Type` e das definicoes -- e o `Add-Type` de
@@ -348,6 +371,9 @@ function Abrir([string]$nome, [int]$velocidade) {
         # sequencia invalida.
         $p.Encoding = [System.Text.Encoding]::ASCII
         $p.Open()
+		# Limpa bytes da sessao anterior ANTES do pulso. Limpar depois pode
+		# apagar justamente READY/OK,MPU da placa que acabou de reiniciar.
+		try { $p.DiscardInBuffer(); $p.DiscardOutBuffer() } catch { }
         # DTR E RTS LIGADOS DE PROPOSITO, E DEPOIS DE ABRIR.
         #
         # O Nano reinicia quando o DTR sobe -- e e reiniciando que ele
@@ -382,7 +408,6 @@ function Abrir([string]$nome, [int]$velocidade) {
             $p.DtrEnable = $true
             $p.RtsEnable = $true
         } catch { }
-        try { $p.DiscardInBuffer(); $p.DiscardOutBuffer() } catch { }
         $script:sp = $p
         $script:portaAberta = $nome
         Dizer ("#ABERTA," + $nome)
@@ -498,4 +523,8 @@ while ($true) {
 }
 
 Fechar $false
+if ($script:possuiMutexSerial -and $script:mutexSerial -ne $null) {
+    try { $script:mutexSerial.ReleaseMutex() } catch { }
+    try { $script:mutexSerial.Dispose() } catch { }
+}
 exit 0

@@ -22,13 +22,11 @@ const CAMINHO_NENHUM := "nenhuma"
 
 ## A ESCOLHA DO CAMINHO ATÉ O ARDUINO, DO MELHOR PARA O QUE SEMPRE EXISTE.
 ##
-## 1. A extensão nativa (`gdserial`), quando o Godot conseguiu carregá-la:
-##    é a mais rápida e a única que fala a porta direto do processo.
-## 2. A PONTE POR PROCESSO, quando não conseguiu — e é este o caso do
-##    gabinete, onde a extensão não carregou e a máquina inteira ficou
-##    morta: START, CRÉDITO, sensor e fitas. A ponte não depende de
-##    binário nenhum que possa faltar; ela usa o que o sistema já tem
-##    (PowerShell no Windows, `stty` no Linux).
+## 1. A extensão nativa (`gdserial`) quando estiver disponível: ela não
+##    abre outro processo nem pulsa DTR a cada recuperação.
+## 2. A PONTE POR PROCESSO é o fallback universal do Windows e usa só o
+##    PowerShell do próprio sistema. Também pode ser a primeira quando
+##    já se provou estável naquele PC.
 ## 3. O backend vazio, só para o jogo abrir e explicar o que houve.
 ##
 ## Ter o degrau 2 é a diferença entre "não funciona nada e ninguém sabe
@@ -43,22 +41,38 @@ const CAMINHO_NENHUM := "nenhuma"
 ## parava ali, porque a escolha do caminho era definitiva. Agora o jogo
 ## pede o PRÓXIMO caminho, e é ele quem descobre, na máquina do cliente,
 ## qual dos dois presta — sem ninguém precisar mexer em arquivo.
-static func create_best(evitar := "") -> SerialLink:
+static func create_best(evitar := "", preferir := "") -> SerialLink:
 	# Uma saída pela porta dos fundos para quem estiver com a máquina na
-	# mão: `PUNCH_SERIAL=ponte` pula a extensão nativa mesmo que ela tenha
-	# carregado, e `PUNCH_SERIAL=nativa` faz o contrário. Serve para
-	# comparar os dois caminhos no mesmo gabinete sem trocar arquivo
-	# nenhum de lugar. Quando está posto, ele MANDA — nem a troca
-	# automática o contraria, senão não haveria como comparar.
-	var forcado := OS.get_environment("PUNCH_SERIAL").strip_edges().to_lower()
+	# mão: no modo de diagnóstico, `PUNCH_SERIAL=ponte` pula a extensão
+	# nativa e `PUNCH_SERIAL=nativa` faz o contrário. Exigimos também
+	# `PUNCH_SERIAL_DIAGNOSTICO=1`: uma variável antiga esquecida no
+	# Windows não pode desativar para sempre a seleção adaptativa.
+	var forcado := ""
+	if OS.get_environment("PUNCH_SERIAL_DIAGNOSTICO").strip_edges() == "1":
+		forcado = OS.get_environment("PUNCH_SERIAL").strip_edges().to_lower()
 	if forcado == CAMINHO_PONTE:
 		evitar = CAMINHO_NATIVO
 	elif forcado == CAMINHO_NATIVO:
 		evitar = CAMINHO_PONTE
-	# Primeiro a escada normal, sem o caminho que já se provou inútil.
-	var escolhido := _tentar_caminho(_outro(evitar))
+	# A preferência gravada é LOCAL daquele Windows e só vale enquanto não
+	# estivermos fugindo justamente dela. Sem histórico, a nativa vem
+	# primeiro: a ponte continua sendo o fallback que funciona sem runtime.
+	var primeiro := _outro(evitar)
+	if forcado.is_empty() and evitar.is_empty():
+		if preferir in [CAMINHO_NATIVO, CAMINHO_PONTE]:
+			primeiro = preferir
+		elif ClassDB.class_exists(&"GdSerialManager"):
+			primeiro = CAMINHO_NATIVO
+	# Primeiro o caminho preferido, sem o que já se provou inútil.
+	var escolhido := _tentar_caminho(primeiro)
 	if escolhido != null:
 		return escolhido
+	# Uma preferência gravada não pode virar ponto único de falha. Se ela
+	# não existe mais neste PC, tenta imediatamente o outro caminho.
+	if evitar.is_empty() and not primeiro.is_empty():
+		escolhido = _tentar_caminho(_outro(primeiro))
+		if escolhido != null:
+			return escolhido
 	# O CAMINHO EVITADO AINDA É MELHOR DO QUE NENHUM. Se o outro não
 	# existe nesta máquina, volta-se para ele: uma máquina meio boa
 	# trabalha, uma máquina desligada não.

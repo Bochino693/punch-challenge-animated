@@ -11,12 +11,16 @@
 # Uso:  sh tools/conferir_exportacao.sh
 set -e
 raiz=$(dirname "$0")/..
-ext="$raiz/addons/gdserial/gdserial.gdextension"
-falhou=0
+extensoes="
+$raiz/addons/gdserial/gdserial.gdextension
+$raiz/addons/CameraServerExtension/CameraServerExtension.gdextension
+"
 
-echo "--- a extensao da serial esta declarada? ---"
-[ -f "$ext" ] || { echo "FALTA $ext"; exit 1; }
-echo "    sim."
+echo "--- as extensoes da serial e da camera estao declaradas? ---"
+for ext in $extensoes; do
+  [ -f "$ext" ] || { echo "FALTA $ext"; exit 1; }
+  printf '    ok   %s\n' "$ext"
+done
 
 echo "--- os binarios que ela aponta existem? ---"
 # Cada linha `plataforma = "res://..."` da secao [libraries].
@@ -27,27 +31,26 @@ echo "--- os binarios que ela aponta existem? ---"
 # para conferir, o .dll do Windows de 64 bits, era justamente um dos que
 # escapavam. Um verificador com um furo no meio e pior do que nenhum:
 # ele da OK e a pessoa confia.
-sed -n 's/^[a-z0-9._]* *= *"res:\/\/\(.*\)"$/\1/p' "$ext" | sort -u | while read -r alvo; do
-  if [ -f "$raiz/$alvo" ]; then
-    printf '    ok   %s\n' "$alvo"
-  else
-    printf '    FALTA %s\n' "$alvo"
-    echo x >> /tmp/conferir_exportacao.falhou
-  fi
+for ext in $extensoes; do
+  alvos=$(sed -n 's/^[a-z0-9._]* *= *"res:\/\/\(.*\)"$/\1/p' "$ext" | sort -u)
+  for alvo in $alvos; do
+    if [ -f "$raiz/$alvo" ]; then
+      printf '    ok   %s\n' "$alvo"
+    else
+      printf '    FALTA %s\n' "$alvo"
+      echo "Binario de extensao faltando: a distribuicao sai incompleta."
+      exit 1
+    fi
+  done
 done
-if [ -f /tmp/conferir_exportacao.falhou ]; then
-  rm -f /tmp/conferir_exportacao.falhou
-  echo "Binario de extensao faltando: o executavel sai sem serial."
-  exit 1
-fi
 
 echo "--- caminhos declarados que nao existem (doc, icones) ---"
-if grep -q '^\[documentation\]' "$ext"; then
-  echo "    HA uma secao [documentation]. Se a pasta nao existir, o Godot"
-  echo "    reclama a cada abertura -- e erro que aparece sempre e erro"
-  echo "    que se aprende a ignorar."
-  exit 1
-fi
+for ext in $extensoes; do
+  if grep -q '^\[documentation\]' "$ext"; then
+    echo "    HA uma secao [documentation] em $ext."
+    exit 1
+  fi
+done
 echo "    nenhum."
 
 echo "--- sobrou lixo VERSIONADO no pacote? ---"

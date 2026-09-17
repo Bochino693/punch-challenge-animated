@@ -122,9 +122,129 @@ def publico() -> np.ndarray:
     return reverb(esquerda, 0.8, 0.22), reverb(direita, 0.8, 0.22)
 
 
+def torcida_estadio(d: float, intensidade: float, seed: int):
+    """Torcida de estádio para a cerimônia do ranking.
+
+    Combina massa vocal, canto grave, palmas, assobios e a cauda longa do
+    ginásio. As quatro colocações usam durações e densidades diferentes;
+    não são o mesmo WAV apenas tocado mais baixo.
+    """
+    t = tempo(d)
+    rng = np.random.default_rng(seed)
+    entrada = np.clip((1.0 - np.exp(-t * (9.0 + intensidade * 3.0))), 0.0, 1.0)
+    saida = np.exp(-np.maximum(0.0, t - d * 0.68) * (1.0 + 0.45 / intensidade))
+    onda = entrada * saida
+
+    # Milhares de vozes viram bandas largas; duas fontes independentes
+    # dão largura real, sem copiar o mesmo ruído nos dois canais.
+    massa_l = (
+        biquad(ruido(d), 620.0, 0.45, "bp")
+        + biquad(ruido(d), 1280.0, 0.65, "bp") * 0.72
+        + biquad(ruido(d), 2350.0, 0.90, "bp") * 0.32
+    )
+    massa_r = (
+        biquad(ruido(d), 710.0, 0.48, "bp")
+        + biquad(ruido(d), 1460.0, 0.70, "bp") * 0.68
+        + biquad(ruido(d), 2700.0, 1.00, "bp") * 0.28
+    )
+    modulacao = 1.0 + 0.16 * np.sin(2 * np.pi * 2.7 * t) + 0.10 * np.sin(2 * np.pi * 4.3 * t + 0.8)
+    esquerda = massa_l * onda * modulacao * (0.55 + intensidade * 0.28)
+    direita = massa_r * onda * np.roll(modulacao, 117) * (0.55 + intensidade * 0.28)
+
+    # Canto coletivo "ô-ô": não forma uma palavra, mas dá à massa a
+    # identidade de arquibancada que ruído filtrado sozinho não possui.
+    pulso = np.power(np.clip(np.sin(2 * np.pi * 1.65 * t), 0.0, 1.0), 0.55)
+    canto = np.zeros(n_amostras(d))
+    for _ in range(18 + int(22 * intensidade)):
+        fundamental = float(rng.uniform(145.0, 235.0))
+        fase = float(rng.uniform(0.0, np.pi * 2.0))
+        voz = np.sin(2 * np.pi * fundamental * t + fase)
+        voz += 0.38 * np.sin(2 * np.pi * fundamental * 2.02 * t + fase * 0.7)
+        canto += voz * float(rng.uniform(0.018, 0.040))
+    canto *= onda * (0.35 + pulso * 0.65) * intensidade
+    esquerda += canto * 0.78
+    direita += np.roll(canto, 71) * 0.74
+
+    # Palmas densas e curtas. A posição estéreo de cada grupo varia.
+    palmas_l = np.zeros(n_amostras(d))
+    palmas_r = np.zeros(n_amostras(d))
+    total_palmas = int((85.0 + d * 52.0) * intensidade)
+    for _ in range(total_palmas):
+        quando = n_amostras(float(rng.uniform(0.18, max(0.19, d - 0.08))))
+        estalo = biquad(ruido(0.014), float(rng.uniform(1700.0, 3900.0)), 1.25, "bp")
+        estalo *= env_ad(0.014, 0.0004, 0.012, 2.8)
+        panorama = float(rng.uniform(0.08, 0.92))
+        ganho = float(rng.uniform(0.20, 0.62))
+        somar(palmas_l, estalo, quando, ganho * (1.0 - panorama))
+        somar(palmas_r, estalo, quando, ganho * panorama)
+    esquerda += palmas_l * onda
+    direita += palmas_r * onda
+
+    # Assobios aparecem apenas nas festas maiores e sobem como grito de gol.
+    for _ in range(int(2 + intensidade * 5)):
+        inicio = float(rng.uniform(0.12, max(0.13, d * 0.56)))
+        dur = float(rng.uniform(0.28, 0.72))
+        apito = varredura(float(rng.uniform(1700.0, 2400.0)), float(rng.uniform(2500.0, 3600.0)), dur, 1.2)
+        apito *= env_ad(dur, 0.025, dur * 0.82, 1.5) * 0.055 * intensidade
+        pos = n_amostras(inicio)
+        if rng.random() < 0.5:
+            somar(esquerda, apito, pos, 1.0)
+            somar(direita, apito, pos, 0.28)
+        else:
+            somar(esquerda, apito, pos, 0.28)
+            somar(direita, apito, pos, 1.0)
+
+    return (
+        satura(reverb(esquerda, tamanho=0.90, mistura=0.30), 1.35),
+        satura(reverb(direita, tamanho=0.90, mistura=0.30), 1.35),
+    )
+
+
+def torcida_desdenho():
+    """Murmúrio, vaias curtas e assobios descendentes para golpe fraco."""
+    d = 2.15
+    t = tempo(d)
+    rng = np.random.default_rng(606)
+    env = np.clip(t * 9.0, 0.0, 1.0) * np.exp(-np.maximum(0.0, t - 0.72) * 1.35)
+    massa_l = biquad(ruido(d), 720.0, 0.55, "bp") * env * 0.50
+    massa_r = biquad(ruido(d), 890.0, 0.62, "bp") * env * 0.47
+    # Pulsos graves imitam o "ôôô" de desaprovação sem sintetizar fala.
+    vaias = np.zeros(n_amostras(d))
+    for freq in (132.0, 151.0, 178.0, 204.0):
+        fase = float(rng.uniform(0.0, np.pi * 2.0))
+        vaias += np.sin(2 * np.pi * freq * t + fase) * 0.055
+    vaias *= env * (0.72 + 0.28 * np.sin(2 * np.pi * 3.1 * t))
+    massa_l += vaias
+    massa_r += np.roll(vaias, 83) * 0.92
+    for i in range(4):
+        inicio = 0.18 + i * 0.31 + float(rng.uniform(-0.05, 0.05))
+        dur = 0.34
+        apito = varredura(float(rng.uniform(2700.0, 3400.0)), float(rng.uniform(1500.0, 2100.0)), dur, 1.1)
+        apito *= env_ad(dur, 0.018, 0.28, 1.8) * 0.05
+        if i % 2 == 0:
+            somar(massa_l, apito, n_amostras(inicio), 1.0)
+            somar(massa_r, apito, n_amostras(inicio), 0.24)
+        else:
+            somar(massa_l, apito, n_amostras(inicio), 0.24)
+            somar(massa_r, apito, n_amostras(inicio), 1.0)
+    return reverb(massa_l, 0.84, 0.26), reverb(massa_r, 0.84, 0.26)
+
+
 if __name__ == "__main__":
     salvar("arena_corpo", corpo(), alvo_rms=0.17)
     salvar("arena_queda", queda(), alvo_rms=0.16)
     e, d = publico()
     salvar("arena_publico", e, d, alvo_rms=0.11)
-    print("arena_corpo, arena_queda, arena_publico gerados")
+    # Reação exclusiva do golpe abaixo de 6.000; não compartilha o áudio
+    # de comemoração para não premiar visualmente um golpe fraco.
+    e, d = torcida_desdenho()
+    salvar("torcida_desdenho", e, d, alvo_rms=0.105)
+    for nome, duracao, intensidade, seed in (
+        ("torcida_recorde", 5.4, 1.00, 101),
+        ("torcida_podio", 4.4, 0.82, 202),
+        ("torcida_top10", 3.5, 0.62, 303),
+        ("torcida_top20", 2.7, 0.44, 404),
+    ):
+        e, d = torcida_estadio(duracao, intensidade, seed)
+        salvar(nome, e, d, alvo_rms=0.13 if intensidade >= 0.8 else 0.11)
+    print("arena, desdenho e quatro torcidas de ranking gerados")

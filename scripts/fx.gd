@@ -42,24 +42,25 @@ func vivo() -> bool:
 
 
 func atualizar(delta: float) -> void:
-	var restantes: Array = []
-	for p in _particulas:
+	# Atualização NO LUGAR. A versão anterior criava uma segunda lista e
+	# copiava centenas de Dictionaries em todo quadro da comemoração; era
+	# esse coletor de lixo, não a gravidade, que fazia o confete descer aos
+	# trancos em PCs modestos.
+	for i in range(_particulas.size() - 1, -1, -1):
+		var p: Dictionary = _particulas[i]
 		p.vida -= delta
 		if p.vida <= 0.0:
+			_particulas.remove_at(i)
 			continue
 		p.velocidade.y += p.gravidade * delta
 		p.velocidade *= 1.0 - p.arrasto * delta
 		p.posicao += p.velocidade * delta
 		p.giro += p.giro_velocidade * delta
-		restantes.append(p)
-	_particulas = restantes
-
-	var ondas_vivas: Array = []
-	for o in _ondas:
+	for i in range(_ondas.size() - 1, -1, -1):
+		var o: Dictionary = _ondas[i]
 		o.tempo += delta
-		if o.tempo < o.duracao:
-			ondas_vivas.append(o)
-	_ondas = ondas_vivas
+		if o.tempo >= o.duracao:
+			_ondas.remove_at(i)
 
 
 func desenhar(tela: CanvasItem) -> void:
@@ -75,22 +76,13 @@ func desenhar(tela: CanvasItem) -> void:
 		cor.a *= clampf(p.vida / p.vida_total, 0.0, 1.0)
 		match p.tipo:
 			"confete":
-				# Retângulo girando: o confete de verdade mostra ora a
-				# face, ora o canto -- é a largura oscilando que dá isso.
-				#
-				# A largura tem um piso: exatamente de perfil o cosseno
-				# zera, os quatro cantos caem sobre a mesma reta e o
-				# desenho vira um polígono sem área, que o motor recusa
-				# ("triangulation failed") e ainda enche o log. De perfil
-				# o confete é uma lasca fina, não um nada.
-				var largura: float = maxf(p.tamanho * 0.10, p.tamanho * absf(cos(p.giro)))
-				var pontos := PackedVector2Array([
-					p.posicao + Vector2(-largura, -p.tamanho * 1.6).rotated(p.giro * 0.35),
-					p.posicao + Vector2(largura, -p.tamanho * 1.6).rotated(p.giro * 0.35),
-					p.posicao + Vector2(largura, p.tamanho * 1.6).rotated(p.giro * 0.35),
-					p.posicao + Vector2(-largura, p.tamanho * 1.6).rotated(p.giro * 0.35),
-				])
-				Traco.poligono(tela, pontos, cor)
+				# Uma fita é uma linha larga vista de longe. Uma chamada de
+				# desenho substitui o polígono triangulado + contorno de cada
+				# papel e permite MAIS confete com menos custo.
+				var direcao := Vector2.from_angle(p.giro * 0.35)
+				var metade: float = p.tamanho * 1.65
+				var largura: float = maxf(1.2, p.tamanho * (0.20 + 0.80 * absf(cos(p.giro))))
+				tela.draw_line(p.posicao - direcao * metade, p.posicao + direcao * metade, cor, largura, false)
 			"brasa":
 				# BRASA: um risco na direção do voo, com a cabeça mais
 				# quente. É o que substituiu o confete — um retângulo
@@ -175,6 +167,25 @@ func confete(centro: Vector2, quantidade: int, cores: Array, forca: float = 900.
 			"giro_velocidade": randf_range(-9.0, 9.0),
 			"cor": cores[randi() % cores.size()],
 			"vida": randf_range(1.6, 3.1),
+		})
+
+## Chuva distribuída pela tela, usada na premiação. Nasce em várias alturas
+## para a festa já aparecer cheia sem despejar todas as partículas no mesmo
+## quadro visual. A quantidade passa pelo vigia de desempenho normalmente.
+func chuva_de_confete(largura: float, quantidade: int, cores: Array, intensidade := 1.0) -> void:
+	for i in range(_quantas(quantidade)):
+		var escala := clampf(intensidade, 0.35, 1.4)
+		_nascer({
+			"tipo": "confete",
+			"posicao": Vector2(randf_range(25.0, largura - 25.0), randf_range(-520.0, -20.0)),
+			"velocidade": Vector2(randf_range(-120.0, 120.0), randf_range(260.0, 520.0) * escala),
+			"gravidade": randf_range(620.0, 980.0),
+			"arrasto": 0.42,
+			"tamanho": randf_range(5.0, 10.0),
+			"giro": randf_range(0.0, TAU),
+			"giro_velocidade": randf_range(-8.0, 8.0),
+			"cor": cores[randi() % cores.size()],
+			"vida": randf_range(2.2, 3.8),
 		})
 
 

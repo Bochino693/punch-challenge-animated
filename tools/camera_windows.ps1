@@ -1,7 +1,6 @@
-# PERGUNTA AO WINDOWS O QUE O OPENCV NAO CONSEGUE RESPONDER.
+# DIAGNOSTICO DA CAMERA NATIVA DO WINDOWS.
 #
-# Quando a sondagem do OpenCV volta "nenhuma camera respondeu", ha tres
-# mundos diferentes escondidos atras da mesma frase:
+# Quando a camera nao aparece no jogo, ha tres causas comuns:
 #
 #   1. o Windows tambem nao ve a camera      -> cabo, porta USB ou driver;
 #   2. o Windows ve, mas a privacidade esta  -> um interruptor, e o jogo
@@ -10,9 +9,8 @@
 #   3. o Windows ve e liberou, mas outro     -> so um programa por vez
 #      programa esta com a camera aberta        pode abrir uma webcam.
 #
-# O OpenCV falha igual nos tres. Este script separa os tres, e por isso
-# ele existe: sem ele o operador fica trocando cabo por causa de um
-# interruptor de privacidade.
+# Este script separa os tres casos sem abrir o fluxo de video. A imagem
+# continua sendo capturada diretamente pelo Media Foundation dentro do jogo.
 #
 # Uso:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File camera_windows.ps1 -Acao listar

@@ -62,6 +62,7 @@ func run() -> void:
 	_quadro_repetido_mantem_a_sessao()
 	_escuro_conta_como_vida()
 	_foto_nao_sai_de_quadro_congelado()
+	_foto_da_pose_nao_reutiliza_quadro_anterior()
 	_obturador_guarda_o_melhor_da_pose()
 
 	print("CAMERA_VIVA_OK")
@@ -78,7 +79,7 @@ func _vida_vem_da_imagem() -> void:
 	assert(svc.pronta())
 	svc._last_frame_ms = Time.get_ticks_msec() - svc.VIDA_MAXIMA_MS - 50
 	assert(not svc.ao_vivo())
-	assert(svc.pronta())
+	assert(not svc.pronta())
 	assert(not svc.available())
 
 	# E volta a valer no primeiro quadro novo.
@@ -144,6 +145,14 @@ func _foto_nao_sai_de_quadro_congelado() -> void:
 	svc._registrar_quadro(quadro(5), Time.get_ticks_msec() + 60)
 	assert(svc._obturador_teve_vida)
 	assert(svc._melhor_imagem != null)
+
+func _foto_da_pose_nao_reutiliza_quadro_anterior() -> void:
+	# Há imagem recente antes da pose, mas nenhum quadro novo depois que o
+	# obturador abre. O fallback da captura comum não pode fotografar essa
+	# imagem anterior.
+	svc._registrar_quadro(quadro(2), Time.get_ticks_msec())
+	svc.abrir_obturador(700)
+	assert(svc.capture_photo().is_empty())
 
 func _obturador_guarda_o_melhor_da_pose() -> void:
 	svc.abrir_obturador(4000)

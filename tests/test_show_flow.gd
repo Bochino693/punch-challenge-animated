@@ -27,6 +27,13 @@ class FakeCamera extends CameraService:
 		shots += 1
 		return ""
 
+class FakeSerial extends SerialLink:
+	var aberta := true
+	func available() -> bool: return true
+	func is_open() -> bool: return aberta
+	func close_port() -> void: aberta = false
+	func nome_do_caminho() -> String: return SerialLink.CAMINHO_NATIVO
+
 ## `arcade_stage.gd` não tem `class_name` — ele é carregado por preload
 ## em quem o usa. Aqui vale o mesmo caminho, e não um nome global.
 const ArcadeStage = preload("res://scripts/presentation/arcade_stage.gd")
@@ -41,6 +48,13 @@ func run() -> void:
 	root.add_child(jogo)
 	await process_frame
 	jogo.set_process(false)
+	# Todo fluxo de produção agora exige placa + MPU + sinal recente. A
+	# suíte usa uma conexão explícita de bancada; nenhum teste ganha START
+	# apenas por ter desligado a exigência da câmera.
+	jogo._soltar_link()
+	jogo.link = FakeSerial.new()
+	jogo.porta_atual = "COMTESTE"
+	_sensor_pronto()
 	# A máquina de testes nunca é a de um salão: sem Central aberta, para
 	# as regras de produção valerem.
 	#
@@ -72,8 +86,8 @@ func run() -> void:
 	_test_timeout_devolve_credito()
 	_test_quatro_digitos()
 	_test_medico_da_camera()
-	_test_interpretador_da_ponte()
-	_test_exame_nao_briga_com_a_ponte()
+	_test_captura_nativa_sem_ponte()
+	_test_diagnostico_nao_interrompe_video()
 	_test_camera_acesa_nao_apaga()
 	_test_camera_manda_na_rodada()
 	_test_contagem_espera_a_camera()
@@ -90,6 +104,11 @@ func run() -> void:
 	await process_frame
 	print("SHOW_FLOW_OK")
 	quit(0)
+
+func _sensor_pronto() -> void:
+	jogo.placa_respondeu = true
+	jogo.sensor_presente = true
+	jogo.ultimo_sinal_ms = Time.get_ticks_msec()
 
 # ------------------------------------------------------------ entrada
 func _test_entrada() -> void:
@@ -193,6 +212,7 @@ func _armar() -> void:
 
 # ------------------------------------------------- START e CRÉDITO
 func _test_start_e_credito_independentes() -> void:
+	_sensor_pronto()
 	# Os dois nunca podem ser o mesmo aperto.
 	assert(int(jogo.botao_start["index"]) != int(jogo.botao_credito["index"]))
 	jogo._entrar_em_abertura()
@@ -258,39 +278,15 @@ func _test_quatro_digitos() -> void:
 func _test_medico_da_camera() -> void:
 	assert(jogo.medico != null)
 	assert(not jogo.medico.rodando)
-	# Ruído de biblioteca não entra no relatório: numa tela de doze
-	# linhas, quatro avisos do OpenCV por índice apagam o que interessa.
-	var limpas: Array = jogo.medico._linhas_de([
-		"[ WARN:0@0.011] global cap.cpp:475 open VIDEOIO(V4L2)",
-		"Python 3.12.3",
-		"",
-		"[ERROR:1] alguma coisa interna",
-	])
-	assert(limpas.size() == 1)
-	assert(str(limpas[0]) == "Python 3.12.3")
-
-	# TEXTO DE FORA NÃO É UTF-8. O console do Windows em português fala
-	# CP-850, e o acento chega aqui como caractere perdido. O relatório é
-	# para ser LIDO: lixo vira espaço, e a frase sobrevive sem o acento.
-	var torta: Array = jogo.medico._linhas_de([
-		"instala%s%so concluida" % [String.chr(0xFFFD), String.chr(0xFFFD)],
-	])
-	assert(torta.size() == 1)
-	assert(String.chr(0xFFFD) not in str(torta[0]))
-	assert("concluida" in str(torta[0]))
 
 	# Achou câmera: a máquina adota o índice e reabre.
 	jogo.camera_service.selected_index = 0
 	# `assign`, e não `=`: `indices` é Array[int] tipado, e atribuir um
 	# literal solto de fora deixa a lista vazia em silêncio.
 	jogo.medico.indices.assign([2])
-	jogo.medico.backend = "DSHOW"
+	jogo.medico.backend = "MEDIA FOUNDATION"
 	jogo._fim_do_exame()
 	assert(jogo.camera_service.selected_index == 2)
-	# O back-end descoberto também é adotado: sem isso a ponte refaz a
-	# fila inteira a cada religada, e cada tentativa frustrada custa
-	# segundos justamente na hora da foto.
-	assert(jogo.camera_service.backend_preferido == "DSHOW")
 	jogo.medico.indices.clear()
 	jogo.medico.backend = ""
 
@@ -309,7 +305,7 @@ func _test_medico_da_camera() -> void:
 	assert("WindowsCamera" in jogo.medico._veredito())
 
 	jogo.medico.ocupantes = "nenhum"
-	assert("OPENCV" in jogo.medico._veredito().to_upper())
+	assert("MEDIA FOUNDATION" in jogo.medico._veredito().to_upper())
 
 	jogo.medico.cameras_do_windows = -1
 	jogo.medico.privacidade = ""
@@ -397,70 +393,21 @@ func _test_obturador_da_pose() -> void:
 	camera._melhor_imagem = null
 	camera._melhor_nota = -1.0
 
-# ------------------------------------------- qual Python a ponte usa
-func _test_interpretador_da_ponte() -> void:
+# ------------------------------- captura nativa, sem processo auxiliar
+func _test_captura_nativa_sem_ponte() -> void:
+	assert(not FileAccess.file_exists("res://tools/camera_bridge.py"))
+	assert(ClassDB.class_exists(&"CameraServerExtension"))
+
+# O diagnóstico PowerShell só consulta o Windows. Ele não derruba a textura
+# nem toma a webcam do backend Media Foundation.
+func _test_diagnostico_nao_interrompe_video() -> void:
 	var camera: CameraService = jogo.camera_service
-	camera._riscados.clear()
-	camera.python_exe = ""
-	camera.python_args = PackedStringArray()
-
-	# Sem nada provado, vale a lista do sistema, na ordem.
-	var lista: Array = camera._lista_de_interpretadores()
-	assert(camera._proximo_interpretador() == str(lista[0]))
-
-	# Um candidato riscado sai da fila. É isto que impede o jogo de
-	# insistir no atalho da Microsoft Store, que nasce, abre a loja e
-	# morre — devolvendo um PID válido que o jogo tomava por sucesso.
-	camera._riscar_interpretador(str(lista[0]))
-	assert(camera._proximo_interpretador() == str(lista[1]))
-
-	# Riscados todos, não sobra nada: aí é falar, não tentar de novo.
-	for nome in lista:
-		camera._riscar_interpretador(str(nome))
-	assert(camera._proximo_interpretador() == "")
-
-	# O que o diagnóstico PROVOU tem precedência e limpa os riscos.
-	camera.adotar_python("py", PackedStringArray(["-3"]))
-	assert(camera._proximo_interpretador() == "py")
-	assert(camera._args_do_interpretador("py") == PackedStringArray(["-3"]))
-	# E o `py` sem prova ainda recebe o -3: sem ele o lançador pode abrir
-	# um Python 2 esquecido na máquina.
-	camera.python_exe = ""
-	assert(camera._args_do_interpretador("py") == PackedStringArray(["-3"]))
-	camera._riscados.clear()
-	camera.python_exe = ""
-	camera.python_args = PackedStringArray()
-
-# ------------------------------- o fluxo unico da camera
-func _test_exame_nao_briga_com_a_ponte() -> void:
-	var camera: CameraService = jogo.camera_service
-	camera.enabled = true
-	camera.estado = camera.Estado.SUBINDO
-
-	# O exame pede a webcam. Só um programa por vez abre uma: enquanto o
-	# diagnóstico sonda os índices, a ponte tem de estar fora do ar --
-	# senão os dois se atropelam e a imagem pisca.
-	camera.pedir_exame()
-	camera._atender_pedido()
-	assert(camera.estado == camera.Estado.EXAME)
-	assert(camera._bridge_pid <= 0)
-
-	# Em exame, nenhum quadro de supervisão religa nada.
-	camera._supervisionar(0.016)
-	camera._supervisionar(0.016)
-	assert(camera.estado == camera.Estado.EXAME)
-	assert(camera._bridge_pid <= 0)
-
-	# No fim, a ponte volta com bateria nova de tentativas.
-	camera._bridge_desistiu = true
-	camera._bridge_reinicios = 99
-	camera.enabled = false
-	camera.terminar_exame()
-	camera._atender_pedido()
-	assert(camera.estado == camera.Estado.DESLIGADA)
-	assert(not camera._bridge_desistiu)
-	assert(camera._bridge_reinicios == 0)
-	camera.enabled = true
+	camera.estado = camera.Estado.ACESA
+	camera._sessao_aprovada = true
+	var estado_antes: int = camera.estado
+	camera.entregar_ao_exame()
+	assert(camera.estado == estado_antes)
+	assert(camera._sessao_aprovada)
 
 ## UM QUADRO DIFERENTE A CADA CHAMADA.
 ##
@@ -489,90 +436,31 @@ func _quadro_vivo(semente: int) -> Image:
 func _test_camera_acesa_nao_apaga() -> void:
 	var camera: CameraService = jogo.camera_service
 	camera.enabled = true
-	camera.forcar_ponte = true
-
-	# Finge uma ponte de pé, entregando quadro agora mesmo.
-	#
-	# "ENTREGANDO" VIROU LITERAL: `pronta()` deixou de acreditar no
-	# estado e passou a exigir que a IMAGEM esteja mudando. Um quadro
-	# registrado de verdade é o que liga isso — e é essa diferença que
-	# impede a contagem de correr sobre uma imagem congelada.
 	camera.estado = camera.Estado.ACESA
-	camera._bridge_pid = 999999
-	camera._bridge_texture = ImageTexture.create_from_image(
-		Image.create(8, 8, false, Image.FORMAT_RGB8)
-	)
 	camera._registrar_quadro(_quadro_vivo(1), Time.get_ticks_msec())
 	assert(camera.ao_vivo())
 	assert(camera.pronta())
-	assert(camera.tem_imagem())
 
-	# IMAGEM PARADA NÃO É CÂMERA PRONTA, por mais que o processo esteja
-	# de pé e o estado diga ACESA. Este é o congelamento que a tela da
-	# pose mostrava como se fosse ao vivo.
-	camera._ultima_mudanca_ms = Time.get_ticks_msec() - camera.VIDA_MAXIMA_MS - 200
+	# A amostragem de saúde não religa o dispositivo. Um quadro novo apenas
+	# atualiza a prova de vida; o feed nativo continua sendo o mesmo.
+	camera._last_frame_ms = Time.get_ticks_msec() - camera.VIDA_MAXIMA_MS - 200
 	assert(not camera.ao_vivo())
 	assert(not camera.pronta())
-	assert(camera.tem_imagem())
 	camera._registrar_quadro(_quadro_vivo(2), Time.get_ticks_msec())
+	assert(camera.ao_vivo())
 	assert(camera.pronta())
 
-	# QUADRO ATRASADO AINDA É IMAGEM. `available()` fica falso -- e deve
-	# ficar, porque a foto quer um quadro de agora --, mas a PRÉVIA
-	# continua mostrando a cara de quem está ali. Era por confundir as
-	# duas perguntas que a tela voltava ao boneco marrom no começo de
-	# cada rodada.
-	camera._last_frame_ms = Time.get_ticks_msec() - 4000
-	assert(not camera.available())
-	assert(camera.tem_imagem())
-	camera._registrar_quadro(_quadro_vivo(3), Time.get_ticks_msec())
-	camera._ultima_textura = camera._bridge_texture
-
-	# A RELIGADA DA PONTE NÃO APAGA A IMAGEM DA TELA. Era o último
-	# caminho que levava de volta ao boneco: `_matar_ponte` zerava a
-	# textura e a tela ficava no desenho ate o primeiro quadro novo.
-	camera._matar_ponte()
-	assert(camera._bridge_texture == null)
-	assert(camera.tem_imagem())
-	assert(camera.preview_texture() != null)
-	camera._bridge_pid = 999999
-	camera._bridge_texture = camera._ultima_textura
-
-	# UM PEDIDO DE ABERTURA NÃO DERRUBA O QUE JÁ ESTÁ ACESO. Era daqui
-	# que vinha o acende-e-apaga: várias origens pediam "atualize" o
-	# tempo todo, e cada pedido matava a ponte que estava entregando.
-	camera.pedir_abertura()
-	camera._atender_pedido()
-	assert(camera._bridge_pid == 999999)
-	assert(camera.pronta())
-
-	# O aviso de lista de câmeras do Godot também não derruba: com a
-	# ponte no ar ele é ruído, porque ela fala com a webcam por fora.
+	# Um aviso do CameraServer não invalida uma sessão aprovada.
 	camera._on_camera_feeds_updated(0)
-	camera._atender_pedido()
-	assert(camera._bridge_pid == 999999)
+	assert(camera.pronta())
 
-	# DUAS ORDENS NO MESMO QUADRO VALEM UMA. É o que o fluxo único
-	# garante: antes, cada chamada agia na hora e uma atropelava a outra.
+	# Desligamento explícito encerra a sessão.
 	camera.pedir_fechamento()
-	camera.pedir_abertura()
-	camera._atender_pedido()
-	assert(camera.enabled)
-
-	# E a ordem de desligar, essa derruba mesmo.
-	camera.pedir_fechamento()
-	camera._atender_pedido()
 	assert(camera.estado == camera.Estado.DESLIGADA)
-	assert(camera._bridge_pid <= 0)
 	assert(not camera.pronta())
-	# E só o desligamento explícito apaga a memória da imagem.
-	assert(not camera.tem_imagem())
-	assert(camera._ultima_textura == null)
 
 	camera.enabled = true
-	camera.forcar_ponte = false
 	camera.estado = camera.Estado.SUBINDO
-	camera._bridge_texture = null
 
 # ------------------- sem camera a rodada nao comeca e a ficha fica
 func _test_camera_manda_na_rodada() -> void:
@@ -585,6 +473,7 @@ func _test_camera_manda_na_rodada() -> void:
 	inteira.
 	"""
 	var camera: CameraService = jogo.camera_service
+	_sensor_pronto()
 	jogo.camera_obrigatoria = true
 	jogo.camera_enabled = true
 	camera.enabled = true
@@ -614,7 +503,7 @@ func _test_camera_manda_na_rodada() -> void:
 	# A IMAGEM CONGELA NO MEIO DA POSE: o relógio PARA em vez de correr
 	# sobre um quadro velho. É o "no segundo 2 a câmera congela".
 	jogo.aguardando_camera = false
-	camera._ultima_mudanca_ms = Time.get_ticks_msec() - camera.VIDA_MAXIMA_MS - 400
+	camera._last_frame_ms = Time.get_ticks_msec() - camera.VIDA_MAXIMA_MS - 400
 	var antes: float = jogo.countdown_left
 	jogo._processar_contagem(0.016)
 	assert(jogo.aguardando_camera)
@@ -646,6 +535,9 @@ func _test_camera_manda_na_rodada() -> void:
 # ------------------------- a contagem so comeca com a camera acesa
 func _test_contagem_espera_a_camera() -> void:
 	var camera: CameraService = jogo.camera_service
+	_sensor_pronto()
+	jogo.state = GameDef.State.IDLE
+	jogo.camera_obrigatoria = false
 	camera.enabled = true
 	jogo.camera_enabled = true
 	camera.estado = camera.Estado.SUBINDO
@@ -793,6 +685,7 @@ func _test_porta_fixa() -> void:
 func _test_botoes_do_arduino_ponta_a_ponta() -> void:
 	jogo._entrar_em_abertura()
 	jogo.central_aberta = false
+	jogo.camera_obrigatoria = false
 	jogo.game_mode = "credit"
 	jogo.credits = 0
 	jogo.serial_start = 0
@@ -809,10 +702,20 @@ func _test_botoes_do_arduino_ponta_a_ponta() -> void:
 	jogo._tentar_conectar()
 	assert("SEM CAMINHO" in jogo.serial_status.to_upper())
 	jogo.link = guardado
+	if jogo.link is FakeSerial:
+		(jogo.link as FakeSerial).aberta = true
 
 	# A placa se apresenta.
 	jogo._on_serial_line("READY,PUNCH_MPU6050,V3")
 	assert("COM5" in jogo.serial_status)
+	assert(not jogo.sensor_presente)
+	assert(jogo.porta_serial_conhecida == "COM5")
+	# READY prova só a placa. O firmware precisa confirmar o MPU antes de
+	# qualquer START poder consumir a ficha.
+	jogo._on_serial_line("OK,MPU")
+	assert(not jogo._sensor_ligado())
+	jogo._on_serial_line("CALIBRATED,0.0,0.0,1.0")
+	assert(jogo._sensor_ligado())
 
 	# CREDITO: a linha entra, o saldo sobe.
 	jogo._on_serial_line("BUTTON,CREDIT")
@@ -877,7 +780,7 @@ func _test_ponte_por_processo() -> void:
 		[ProjectSettings.globalize_path("res://tests/ponte_falsa.sh")], ["/bin/sh"]
 	]
 	var ponte := PonteProcessoLink.new()
-	assert(ponte.available())
+	assert(await _ponte_ate(ponte, func() -> bool: return ponte.available()))
 
 	var recebidas: Array[String] = []
 	ponte.line_received.connect(func(l: String) -> void: recebidas.append(l))

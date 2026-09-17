@@ -16,7 +16,7 @@
 | tests/test_serial_teimoso.gd | A busca pelo Arduino: fila de portas, varredura cega, troca de caminho e ressurreição da ponte |
 
 O jogo não depende de Python para reproduzir áudio. A webcam no Windows usa
-a ponte Python/OpenCV já existente em tools/camera_bridge.py.
+o backend nativo Windows Media Foundation incluído em CameraServerExtension.
 
 ## Alteração das artes
 

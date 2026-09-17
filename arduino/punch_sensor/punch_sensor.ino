@@ -1,5 +1,5 @@
 /*
-  PUNCH CHALLENGE -- FIRMWARE V9 (MPU-6050)
+  PUNCH CHALLENGE -- FIRMWARE V10 (MPU-6050)
   Placas: Arduino Uno / Nano (ATmega328P)
   Sensor: MPU-6050 no barramento I2C (A4 = SDA, A5 = SCL), endereco 0x68/0x69.
   Botoes: D2 = START, D3 = CREDIT (liga no GND; INPUT_PULLUP interno).
@@ -98,8 +98,6 @@
      volta.
 */
 
-#include <Wire.h>
-
 /*  AS FITAS SAO OPCIONAIS -- E O SKETCH COMPILA SEM ELAS.
 
     O `#include` da biblioteca das fitas e condicional de proposito: numa
@@ -120,6 +118,8 @@
 #endif
 
 #define MPU_ADDR 0x68
+#define PINO_SDA_I2C A4
+#define PINO_SCL_I2C A5
 #define PINO_BOTAO_START 2
 #define PINO_BOTAO_CREDIT 3
 #define LED_STATUS 13
@@ -158,7 +158,7 @@ float velocidadeMaxima = 5.20f;   // teto da coluna; igual ao teto do jogo
 // da para conferir a compilacao fora da IDE do Arduino.
 void executarComando(const char *cmd);
 void configurar(const char *cmd);
-void calibrar();
+bool calibrar();
 void enviarTelemetria();
 void processarAmostra();
 void processarBotoes();
@@ -175,11 +175,18 @@ void recusar(const __FlashStringHelper *motivo, unsigned long duracao);
 void escreverReg(uint8_t reg, uint8_t valor);
 void atualizarFitas();
 bool mpuLer(float *accelG, float *gyroDps);
+void iniciarI2CSeguro();
+void recuperarBarramentoI2C();
 
 /*  A PLACA FUNCIONA COM OU SEM O SENSOR. */
 bool mpuPronto = false;
+bool calibracaoConcluida = false;
+bool calibrandoAgora = false;
 unsigned long ultimaTentativaMpu = 0;
 uint8_t enderecoMpu = MPU_ADDR;
+uint8_t falhasMpuConsecutivas = 0;
+unsigned long ultimoAvisoMpuMs = 0;
+const uint8_t FALHAS_MPU_ATE_RECUPERAR = 4;
 
 // Escalas do MPU-6050 com a configuracao abaixo (+/-16 g, +/-2000 graus/s).
 const float LSB_POR_G = 2048.0f;
@@ -359,21 +366,137 @@ char bufferSerial[52];
 uint8_t bufferUso = 0;
 
 // ---------------------------------------------------------------- MPU-6050
-/*  POR QUE TODA CHAMADA AO Wire LEVA UM (uint8_t) NA FRENTE.
-    A biblioteca Wire declara duas versoes de `requestFrom` -- (int,int) e
-    (uint8_t,uint8_t). Chamar com um #define (int) e um (uint8_t) deixa as
-    duas igualmente ruins e o compilador acusa ambiguidade. Convertendo
-    os dois lados, a escolha e unica. */
+/*  I2C COM PRAZO, INDEPENDENTE DA VERSAO DA IDE.
+
+    `Wire.requestFrom()` pode bloquear para sempre em versoes antigas do
+    core AVR quando SDA ou SCL ficam presas por ruido, fio longo ou mau
+    contato. Se isso acontece aos 70% da calibracao, a serial tambem para,
+    o jogo fecha a COM e o reset recomeca tudo -- exatamente o ciclo visto
+    na maquina.
+
+    Este mestre I2C pequeno usa os mesmos A4/A5, em aproximadamente
+    100 kHz, e TODA espera por SCL tem prazo. Se o barramento prender, a
+    leitura falha, nove pulsos o soltam e o loop continua atendendo serial
+    e botoes. Nao depende de `Wire.setWireTimeout`, portanto se comporta
+    igual em Uno/Nano antigos e novos. */
+const unsigned long I2C_TIMEOUT_US = 3000;
+bool i2cFalhou = false;
+
+void i2cBaixo(uint8_t pino) {
+  pinMode(pino, OUTPUT);
+  digitalWrite(pino, LOW);
+}
+
+void i2cSolto(uint8_t pino) {
+  pinMode(pino, INPUT_PULLUP);
+}
+
+bool i2cEsperarAlto(uint8_t pino) {
+  i2cSolto(pino);
+  const unsigned long inicio = micros();
+  while (digitalRead(pino) == LOW) {
+    if ((unsigned long)(micros() - inicio) >= I2C_TIMEOUT_US) return false;
+  }
+  return true;
+}
+
+void i2cPausa() { delayMicroseconds(4); }
+
+bool i2cInicio() {
+  i2cSolto(PINO_SDA_I2C);
+  if (!i2cEsperarAlto(PINO_SCL_I2C)) return false;
+  i2cPausa();
+  if (digitalRead(PINO_SDA_I2C) == LOW) return false;
+  i2cBaixo(PINO_SDA_I2C);
+  i2cPausa();
+  i2cBaixo(PINO_SCL_I2C);
+  return true;
+}
+
+void i2cFim() {
+  i2cBaixo(PINO_SDA_I2C);
+  i2cPausa();
+  if (!i2cEsperarAlto(PINO_SCL_I2C)) i2cFalhou = true;
+  i2cPausa();
+  i2cSolto(PINO_SDA_I2C);
+  i2cPausa();
+}
+
+bool i2cEscreverByte(uint8_t valor) {
+  for (uint8_t mascara = 0x80; mascara != 0; mascara >>= 1) {
+    if (valor & mascara) i2cSolto(PINO_SDA_I2C); else i2cBaixo(PINO_SDA_I2C);
+    i2cPausa();
+    if (!i2cEsperarAlto(PINO_SCL_I2C)) { i2cFalhou = true; return false; }
+    i2cPausa();
+    i2cBaixo(PINO_SCL_I2C);
+  }
+  i2cSolto(PINO_SDA_I2C);
+  i2cPausa();
+  if (!i2cEsperarAlto(PINO_SCL_I2C)) { i2cFalhou = true; return false; }
+  const bool confirmou = digitalRead(PINO_SDA_I2C) == LOW;
+  i2cPausa();
+  i2cBaixo(PINO_SCL_I2C);
+  return confirmou;
+}
+
+uint8_t i2cLerByte(bool confirmar) {
+  uint8_t valor = 0;
+  i2cSolto(PINO_SDA_I2C);
+  for (uint8_t i = 0; i < 8; i++) {
+    valor <<= 1;
+    if (!i2cEsperarAlto(PINO_SCL_I2C)) { i2cFalhou = true; return 0; }
+    i2cPausa();
+    if (digitalRead(PINO_SDA_I2C) == HIGH) valor |= 1;
+    i2cBaixo(PINO_SCL_I2C);
+    i2cPausa();
+  }
+  if (confirmar) i2cBaixo(PINO_SDA_I2C); else i2cSolto(PINO_SDA_I2C);
+  i2cPausa();
+  if (!i2cEsperarAlto(PINO_SCL_I2C)) i2cFalhou = true;
+  i2cPausa();
+  i2cBaixo(PINO_SCL_I2C);
+  i2cSolto(PINO_SDA_I2C);
+  return valor;
+}
+
+void recuperarBarramentoI2C() {
+  i2cSolto(PINO_SDA_I2C);
+  i2cSolto(PINO_SCL_I2C);
+  i2cPausa();
+  for (uint8_t i = 0; i < 9 && digitalRead(PINO_SDA_I2C) == LOW; i++) {
+    i2cBaixo(PINO_SCL_I2C);
+    i2cPausa();
+    i2cEsperarAlto(PINO_SCL_I2C);
+    i2cPausa();
+  }
+  i2cFalhou = false;
+  i2cFim();
+  i2cFalhou = false;
+}
+
+void iniciarI2CSeguro() {
+  i2cSolto(PINO_SDA_I2C);
+  i2cSolto(PINO_SCL_I2C);
+  recuperarBarramentoI2C();
+}
+
 void escreverReg(uint8_t reg, uint8_t valor) {
-  Wire.beginTransmission((uint8_t)enderecoMpu);
-  Wire.write((uint8_t)reg);
-  Wire.write((uint8_t)valor);
-  Wire.endTransmission();
+  i2cFalhou = false;
+  if (!i2cInicio()) { recuperarBarramentoI2C(); return; }
+  if (!i2cEscreverByte((uint8_t)(enderecoMpu << 1)) ||
+      !i2cEscreverByte(reg) || !i2cEscreverByte(valor)) i2cFalhou = true;
+  i2cFim();
+  if (i2cFalhou) recuperarBarramentoI2C();
 }
 
 bool mpuResponde(uint8_t endereco) {
-  Wire.beginTransmission((uint8_t)endereco);
-  return Wire.endTransmission() == 0;
+  i2cFalhou = false;
+  if (!i2cInicio()) { recuperarBarramentoI2C(); return false; }
+  const bool respondeu = i2cEscreverByte((uint8_t)(endereco << 1));
+  i2cFim();
+  const bool ok = respondeu && !i2cFalhou;
+  if (i2cFalhou) recuperarBarramentoI2C();
+  return ok;
 }
 
 /*  O MPU-6050 pode estar em 0x68 ou 0x69, conforme o pino AD0. Modulo
@@ -386,15 +509,31 @@ bool mpuVivo() {
 }
 
 bool mpuLer(float *accelG, float *gyroDps) {
-  Wire.beginTransmission((uint8_t)enderecoMpu);
-  Wire.write((uint8_t)0x3B);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom((uint8_t)enderecoMpu, (uint8_t)14) != 14) return false;
+  i2cFalhou = false;
+  if (!i2cInicio()) { recuperarBarramentoI2C(); return false; }
+  if (!i2cEscreverByte((uint8_t)(enderecoMpu << 1)) || !i2cEscreverByte(0x3B)) {
+    i2cFim(); recuperarBarramentoI2C(); return false;
+  }
+  // Inicio repetido: seleciona o mesmo MPU agora em modo de leitura.
+  i2cSolto(PINO_SDA_I2C);
+  i2cPausa();
+  if (!i2cEsperarAlto(PINO_SCL_I2C)) { i2cFim(); recuperarBarramentoI2C(); return false; }
+  i2cPausa();
+  i2cBaixo(PINO_SDA_I2C);
+  i2cPausa();
+  i2cBaixo(PINO_SCL_I2C);
+  if (!i2cEscreverByte((uint8_t)((enderecoMpu << 1) | 1))) {
+    i2cFim(); recuperarBarramentoI2C(); return false;
+  }
 
   int16_t bruto[7];
   for (uint8_t i = 0; i < 7; i++) {
-    bruto[i] = (int16_t)((Wire.read() << 8) | Wire.read());
+    const uint8_t alto = i2cLerByte(true);
+    const uint8_t baixo = i2cLerByte(i < 6);
+    bruto[i] = (int16_t)(((uint16_t)alto << 8) | baixo);
   }
+  i2cFim();
+  if (i2cFalhou) { recuperarBarramentoI2C(); return false; }
   // bruto[0..2] = accel, bruto[3] = temperatura, bruto[4..6] = giro
   saturouAccel = false;
   saturouGyro = false;
@@ -419,7 +558,10 @@ bool mpuLer(float *accelG, float *gyroDps) {
     Agora a dispersao e medida junto. Se a maquina estava se mexendo, o
     zero anterior e mantido e o jogo e avisado.
 */
-void calibrar() {
+bool calibrar() {
+  if (calibrandoAgora) return false;
+  calibrandoAgora = true;
+  calibracaoConcluida = false;
   const uint16_t AMOSTRAS = 300;      // 300 x 4 ms = 1,2 s
   float somaA[3] = {0, 0, 0};
   float somaG[3] = {0, 0, 0};
@@ -465,7 +607,8 @@ void calibrar() {
 
   if (validas < AMOSTRAS / 2) {
     Serial.println(F("ERROR,CALIB_LEITURA"));
-    return;
+    calibrandoAgora = false;
+    return false;
   }
 
   // A maquina se mexeu durante a medida? Entao este zero nao presta.
@@ -477,7 +620,8 @@ void calibrar() {
   const float dispersaoGiro = maxG - minG;
   if (dispersao > RUIDO_G_MAX) {
     Serial.println(F("ERROR,CALIB_MOVIMENTO"));
-    return;                    // mantem a base anterior, de proposito
+    calibrandoAgora = false;
+    return false;                   // mantem a base anterior, de proposito
   }
 
   for (uint8_t i = 0; i < 3; i++) {
@@ -485,6 +629,7 @@ void calibrar() {
     baseGyro[i] = somaG[i] / (float)validas;
   }
   baseIniciada = true;
+  calibracaoConcluida = true;
   amostrasQuietas = 0;
 
   /*  O PISO DE RUIDO DESTA MONTAGEM, medido agora mesmo.
@@ -509,6 +654,8 @@ void calibrar() {
   Serial.print(baseAccel[1], 3);
   Serial.print(',');
   Serial.println(baseAccel[2], 3);
+  calibrandoAgora = false;
+  return true;
 }
 
 // ---------------------------------------------------------------- golpe
@@ -557,11 +704,29 @@ void calibrar() {
 */
 
 void processarAmostra() {
-  float a[3], g[3];
-  if (!mpuLer(a, g)) {
-    Serial.println(F("ERROR,MPU_LEITURA"));
-    return;
-  }
+	if (!calibracaoConcluida) return;
+	float a[3], g[3];
+	if (!mpuLer(a, g)) {
+		/* Uma falha de I2C nao pode virar 250 linhas de erro por segundo.
+		   Essa enxurrada ocupava a serial justamente quando o HIT precisava
+		   passar. Quatro falhas seguidas tiram o MPU de servico; o loop
+		   continua atendendo serial/botoes e `insistirNoMpu` religa sozinho. */
+		if (falhasMpuConsecutivas < 255) falhasMpuConsecutivas++;
+		if (falhasMpuConsecutivas >= FALHAS_MPU_ATE_RECUPERAR) {
+			recuperarBarramentoI2C();
+			mpuPronto = false;
+			calibracaoConcluida = false;
+			golpeAtivo = false;
+			baseIniciada = false;
+			digitalWrite(LED_STATUS, LOW);
+			if (millis() - ultimoAvisoMpuMs > 1000) {
+				Serial.println(F("ERROR,MPU_LEITURA"));
+				ultimoAvisoMpuMs = millis();
+			}
+		}
+		return;
+	}
+	falhasMpuConsecutivas = 0;
 
   const unsigned long agora = micros();
   float dt = (float)(agora - ultimaAmostraUs) / 1000000.0f;
@@ -804,7 +969,7 @@ void processarBotoes() {
     sensor estava enlouquecendo. Com o dinamico, sensor parado mostra
     zero -- e isso e verificavel a olho. */
 void enviarTelemetria() {
-  if (golpeAtivo) return;   // durante o golpe a serial fica livre para o HIT
+  if (!mpuPronto || !calibracaoConcluida || !baseIniciada || golpeAtivo) return;
   float a[3], g[3];
   if (!mpuLer(a, g)) return;
   Serial.print(F("TELEMETRY,"));
@@ -846,8 +1011,7 @@ void executarComando(const char *cmd) {
     digitalWrite(LED_STATUS, LOW);
     Serial.println(F("OK,RESET"));
   } else if (strcasecmp(cmd, "CALIBRATE") == 0) {
-    calibrar();
-    Serial.println(F("OK,CALIBRATE"));
+    if (mpuPronto && calibrar()) Serial.println(F("OK,CALIBRATE"));
   } else if (strcasecmp(cmd, "TEST") == 0) {
     /*  Golpe sintetico: confere a corrente inteira -- Arduino, serial e
         jogo -- sem ninguem socar o saco. Se o TEST aparece na tela e o
@@ -972,15 +1136,19 @@ void setup() {
       esta COM como sendo a do Arduino. Qualquer coisa antes dele que
       possa travar -- procurar sensor, calibrar -- e uma porta certa
       sendo descartada como muda. */
-  Serial.println(F("READY,PUNCH_MPU6050,V9"));
+  Serial.println(F("READY,PUNCH_MPU6050,V10"));
 
-  Wire.begin();
-  Wire.setClock(400000);   // I2C rapido: a leitura nao pode atrasar a amostragem
+	iniciarI2CSeguro();
 
   ultimaAmostraUs = micros();
 
   if (ligarMpu()) {
-    calibrar();
+    if (calibrar()) {
+      /* OK,MPU agora significa sensor CALIBRADO, nao apenas encontrado. */
+      Serial.println(F("OK,MPU"));
+    } else {
+      mpuPronto = false;
+    }
   } else {
     Serial.println(F("ERROR,NO_MPU"));
   }
@@ -990,6 +1158,7 @@ void setup() {
 /*  Acorda o MPU e o deixa na escala do jogo. Devolve falso se ele nao
     responde -- e nesse caso a placa continua trabalhando sem ele. */
 bool ligarMpu() {
+  recuperarBarramentoI2C();
   if (!mpuVivo()) {
     mpuPronto = false;
     return false;
@@ -1000,6 +1169,7 @@ bool ligarMpu() {
   escreverReg(0x1C, 0x18);   // ACCEL_CONFIG: +/-16 g
   delay(50);
   mpuPronto = true;
+  calibracaoConcluida = false;
   baseIniciada = false;      // base nova para um sensor recem-ligado
   return true;
 }
@@ -1014,8 +1184,8 @@ void insistirNoMpu() {
   digitalWrite(LED_STATUS, !digitalRead(LED_STATUS));
   if (ligarMpu()) {
     digitalWrite(LED_STATUS, LOW);
-    Serial.println(F("OK,MPU"));
-    calibrar();
+    if (calibrar()) Serial.println(F("OK,MPU"));
+    else mpuPronto = false;
   }
 }
 

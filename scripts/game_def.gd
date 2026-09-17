@@ -40,7 +40,7 @@ const AVISO_DE_VOLTA := 15.0
 ## lenta e a premiação parecia apressada.
 ##
 ## Aqui é a parte rápida: o flash do impacto e a subida do número.
-const CONTAGEM_DURACAO := 1.25 ## Subida do número no resultado.
+const CONTAGEM_DURACAO := 0.86 ## Subida rápida, legível e sem sensação de espera.
 const IMPACTO_DURACAO := 0.38 ## Estado MEASURING: flash + onda de choque.
 const RESULTADO_TIMEOUT := 12.0
 

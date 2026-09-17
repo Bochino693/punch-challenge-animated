@@ -28,10 +28,10 @@ missing = sorted(name for name in required if not any(name in current for curren
 
 print(f"GLB={path}")
 print(f"NODES={len(nodes)} MESHES={len(meshes)} SKINS={len(skins)} ANIMATIONS={len(animations)} MATERIALS={len(materials)}")
-if not skins:
-    raise SystemExit("GLB_INVALIDO: personagem sem skin/esqueleto")
 if not meshes:
     raise SystemExit("GLB_INVALIDO: personagem sem mesh")
 if missing:
     raise SystemExit("GLB_INVALIDO: animações ausentes: " + ", ".join(missing))
-print("GLB_HUMANOIDE_OK")
+if not skins:
+    print("RIG=articulado por nós (leve, sem skinning)")
+print("GLB_HUMANOIDE_ANIMADO_OK")

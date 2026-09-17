@@ -21,14 +21,13 @@ e as duas são de máquina:
   • O jogo vai para uma TV Box. Malha com esqueleto quer dizer skinning
     por vértice a cada quadro; caixas articuladas são vinte matrizes e
     240 triângulos, que qualquer GPU integrada desenha sem suar.
-  • Uma boneca articulada — peças rígidas com juntas visíveis — é
+  • Um boneco articulado — peças rígidas com juntas visíveis — é
     EXATAMENTE a linguagem dos jogos de luta de console antigo. Não é
     uma limitação disfarçada de estilo: é o estilo.
 
-O jogo anima as peças pelo NOME (ver `scripts/arena/lutador.gd`). Se um
-dia entrar aqui um GLB com esqueleto e AnimationPlayer, o jogo usa as
-animações dele; se entrar um GLB qualquer sem nome nenhum reconhecido,
-ele ainda balança o boneco inteiro. Nenhum dos três casos quebra a tela.
+O arquivo já leva nove animações glTF completas. O jogo as encontra pelo
+NOME (ver `scripts/arena/lutador.gd`); se entrar um GLB externo incompleto,
+a pose procedural ainda impede a tela de quebrar.
 
 Uso: python3 tools/gerar_personagem_glb.py
 """
@@ -60,6 +59,8 @@ MATERIAIS = {
     "olho":     (0.97, 0.97, 0.97),
     "pupila":   (0.62, 0.06, 0.09),
     "boca":     (0.97, 0.95, 0.90),
+    "labio":    (0.48, 0.08, 0.07),
+    "boca_esc": (0.16, 0.02, 0.025),
     "cinto":    (0.10, 0.10, 0.12),
 }
 
@@ -112,15 +113,19 @@ PECAS = [
     ("Sobrancelha_E", "Cabeca",  (-0.068, 0.185, 0.118), (0.10, 0.028, 0.02), (0, 0, 0),      1.00, "cabelo"),
     ("Sobrancelha_D", "Cabeca",  (0.068, 0.185, 0.118),  (0.10, 0.028, 0.02), (0, 0, 0),      1.00, "cabelo"),
     ("Protetor",    "Cabeca",    (0.0, 0.035, 0.108), (0.11, 0.035, 0.03), (0, 0, 0),         1.00, "boca"),
+    ("Boca",        "Cabeca",    (0.0, 0.062, 0.124), (0.13, 0.030, 0.025), (0, 0, 0),        0.90, "boca_esc"),
+    ("Labio",       "Cabeca",    (0.0, 0.040, 0.132), (0.14, 0.025, 0.020), (0, 0, 0),        0.88, "labio"),
     # braços -------------------------------------------------------------
     ("Ombro_E",     "Tronco",    (-0.25, 0.32, 0.0),  (0.18, 0.18, 0.19), (0, 0, 0),          1.00, "pele"),
     ("Braco_E",     "Ombro_E",   (0.0, -0.07, 0.0),   (0.14, 0.24, 0.15), (0, -0.12, 0),      1.00, "pele"),
+    ("Biceps_E",    "Braco_E",   (0.0, -0.11, 0.045), (0.18, 0.22, 0.18), (0, 0, 0),          0.82, "pele_esc"),
     ("Antebraco_E", "Braco_E",   (0.0, -0.24, 0.0),   (0.12, 0.22, 0.14), (0, -0.11, 0),      1.00, "pele"),
     ("Punho_E",     "Antebraco_E", (0.0, -0.21, 0.0), (0.15, 0.05, 0.16), (0, 0, 0),          1.00, "branco"),
     ("Luva_E",      "Antebraco_E", (0.0, -0.24, 0.0), (0.21, 0.23, 0.23), (0, -0.10, 0.01),   0.86, "luva"),
     ("Costura_E",   "Luva_E",    (0.0, -0.10, 0.115), (0.19, 0.02, 0.02), (0, 0, 0),          1.00, "luva_esc"),
     ("Ombro_D",     "Tronco",    (0.25, 0.32, 0.0),   (0.18, 0.18, 0.19), (0, 0, 0),          1.00, "pele"),
     ("Braco_D",     "Ombro_D",   (0.0, -0.07, 0.0),   (0.14, 0.24, 0.15), (0, -0.12, 0),      1.00, "pele"),
+    ("Biceps_D",    "Braco_D",   (0.0, -0.11, 0.045), (0.18, 0.22, 0.18), (0, 0, 0),          0.82, "pele_esc"),
     ("Antebraco_D", "Braco_D",   (0.0, -0.24, 0.0),   (0.12, 0.22, 0.14), (0, -0.11, 0),      1.00, "pele"),
     ("Punho_D",     "Antebraco_D", (0.0, -0.21, 0.0), (0.15, 0.05, 0.16), (0, 0, 0),          1.00, "branco"),
     ("Luva_D",      "Antebraco_D", (0.0, -0.24, 0.0), (0.21, 0.23, 0.23), (0, -0.10, 0.01),   0.86, "luva"),
@@ -193,6 +198,93 @@ POSE = {
     "Espeto_5":    ( 0.55,  0.0,  0.45),
     "Espeto_6":    ( 0.60,  0.0, -0.35),
     "Espeto_7":    (-0.10,  0.0,  0.05),
+}
+
+# Nove ações curtas, desenhadas para leitura a alguns metros da máquina.
+# Como cada membro é um nó rígido, estas animações custam apenas matrizes:
+# não há skinning por vértice e o visual continua leve em vídeo integrado.
+# Os valores são DELTAS sobre a pose de guarda acima.
+ANIMACOES = {
+    "idle": {
+        "duracao": 1.20,
+        "tracks": {
+            "Quadril": {"pos": [(0, 0, 0), (0, .018, 0), (0, 0, 0), (0, -.012, 0), (0, 0, 0)]},
+            "Tronco": {"rot": [(0, 0, 0), (-.025, .018, 0), (0, 0, 0), (.022, -.018, 0), (0, 0, 0)]},
+            "Cabeca": {"rot": [(0, 0, 0), (.018, -.025, 0), (0, 0, 0), (-.015, .025, 0), (0, 0, 0)]},
+        },
+    },
+    "guard": {
+        "duracao": .80,
+        "tracks": {
+            "Quadril": {"pos": [(0, 0, 0), (0, -.012, .012), (0, 0, 0), (0, .014, -.008), (0, 0, 0)]},
+            "Ombro_E": {"rot": [(0, 0, 0), (-.05, 0, .03), (0, 0, 0), (.025, 0, -.02), (0, 0, 0)]},
+            "Ombro_D": {"rot": [(0, 0, 0), (-.04, 0, -.03), (0, 0, 0), (.025, 0, .02), (0, 0, 0)]},
+        },
+    },
+    "taunt_weak": {
+        "duracao": 1.18,
+        "tracks": {
+            "Cabeca": {"rot": [(0, 0, 0), (.05, -.42, -.11), (.07, .38, .10), (.04, -.30, -.08), (0, 0, 0)]},
+            "Tronco": {"rot": [(0, 0, 0), (.04, 0, .12), (.03, 0, -.08), (.04, 0, .09), (0, 0, 0)]},
+            "Ombro_E": {"rot": [(0, 0, 0), (.34, 0, .24), (.42, 0, .28), (.30, 0, .20), (0, 0, 0)]},
+            "Antebraco_E": {"rot": [(0, 0, 0), (-.62, 0, .10), (-.82, 0, .12), (-.56, 0, .08), (0, 0, 0)]},
+            "Ombro_D": {"rot": [(0, 0, 0), (-.08, 0, -.15), (-.05, 0, -.10), (-.08, 0, -.14), (0, 0, 0)]},
+        },
+    },
+    "hit_light": {
+        "duracao": .52,
+        "tracks": {
+            "Tronco": {"rot": [(0, 0, 0), (-.12, .10, .05), (-.20, -.10, -.08), (-.06, 0, 0), (0, 0, 0)]},
+            "Cabeca": {"rot": [(0, 0, 0), (-.22, .34, .12), (-.10, -.14, -.05), (-.04, 0, 0), (0, 0, 0)]},
+        },
+    },
+    "hit_medium": {
+        "duracao": .76,
+        "tracks": {
+            "Quadril": {"pos": [(0, 0, 0), (.04, 0, -.08), (-.03, 0, -.14), (0, 0, -.05), (0, 0, 0)]},
+            "Tronco": {"rot": [(0, 0, 0), (-.18, .18, .10), (-.38, -.18, -.14), (-.12, .04, 0), (0, 0, 0)]},
+            "Cabeca": {"rot": [(0, 0, 0), (-.32, .48, .16), (-.20, -.22, -.10), (-.06, 0, 0), (0, 0, 0)]},
+            "Ombro_E": {"rot": [(0, 0, 0), (.18, 0, .16), (.10, 0, -.08), (0, 0, 0), (0, 0, 0)]},
+        },
+    },
+    "hit_heavy": {
+        "duracao": 1.00,
+        "tracks": {
+            "Quadril": {"pos": [(0, 0, 0), (.10, 0, -.15), (-.10, -.03, -.30), (-.04, 0, -.12), (0, 0, 0)]},
+            "Tronco": {"rot": [(0, 0, 0), (-.28, .28, .18), (-.62, -.22, -.20), (-.20, .08, .04), (0, 0, 0)]},
+            "Cabeca": {"rot": [(0, 0, 0), (-.50, .62, .24), (-.30, -.34, -.16), (-.10, .06, 0), (0, 0, 0)]},
+            "Ombro_D": {"rot": [(0, 0, 0), (.25, 0, -.24), (.15, 0, .12), (0, 0, 0), (0, 0, 0)]},
+        },
+    },
+    "stagger": {
+        "duracao": 1.28,
+        "tracks": {
+            "Quadril": {"pos": [(0, 0, 0), (.16, -.03, -.18), (-.22, -.08, -.42), (.12, -.03, -.25), (0, 0, 0)],
+                        "rot": [(0, 0, 0), (-.12, .10, .18), (-.32, -.14, -.28), (-.10, .05, .10), (0, 0, 0)]},
+            "Tronco": {"rot": [(0, 0, 0), (-.35, .32, .24), (-.72, -.30, -.34), (-.22, .10, .12), (0, 0, 0)]},
+            "Cabeca": {"rot": [(0, 0, 0), (-.62, .72, .28), (-.35, -.44, -.22), (-.14, .10, .04), (0, 0, 0)]},
+            "Coxa_E": {"rot": [(0, 0, 0), (.18, 0, -.12), (-.20, 0, .18), (.08, 0, 0), (0, 0, 0)]},
+            "Coxa_D": {"rot": [(0, 0, 0), (-.14, 0, .12), (.22, 0, -.18), (-.06, 0, 0), (0, 0, 0)]},
+        },
+    },
+    "knockout": {
+        "duracao": 1.35,
+        "tracks": {
+            "Quadril": {"pos": [(0, 0, 0), (.10, -.04, -.18), (-.18, -.32, -.42), (-.30, -.72, -.52), (-.32, -.78, -.50)],
+                        "rot": [(0, 0, 0), (-.28, .16, .20), (-.62, -.12, .66), (-1.12, -.10, 1.32), (-1.18, -.08, 1.48)]},
+            "Tronco": {"rot": [(0, 0, 0), (-.38, .20, .12), (-.62, -.20, -.18), (-.30, 0, -.10), (-.18, 0, 0)]},
+            "Cabeca": {"rot": [(0, 0, 0), (-.60, .44, .18), (-.82, -.30, -.20), (-.36, 0, 0), (-.22, 0, 0)]},
+        },
+    },
+    "get_up": {
+        "duracao": 1.55,
+        "tracks": {
+            "Quadril": {"pos": [(-.32, -.78, -.50), (-.28, -.55, -.42), (-.12, -.30, -.28), (-.04, -.08, -.10), (0, 0, 0)],
+                        "rot": [(-1.18, -.08, 1.48), (-.96, -.06, 1.05), (-.58, 0, .62), (-.20, 0, .20), (0, 0, 0)]},
+            "Tronco": {"rot": [(-.18, 0, 0), (-.30, 0, -.08), (-.24, 0, -.06), (-.10, 0, 0), (0, 0, 0)]},
+            "Cabeca": {"rot": [(-.22, 0, 0), (-.18, 0, 0), (-.12, 0, 0), (-.05, 0, 0), (0, 0, 0)]},
+        },
+    },
 }
 
 
@@ -291,6 +383,46 @@ class Buffer:
         })
         return len(self.acessores) - 1
 
+    def escalares(self, valores):
+        self._alinhar()
+        inicio = len(self.dados)
+        for v in valores:
+            self.dados += struct.pack("<f", v)
+        self.views.append({"buffer": 0, "byteOffset": inicio,
+                           "byteLength": len(self.dados) - inicio})
+        self.acessores.append({
+            "bufferView": len(self.views) - 1, "componentType": 5126,
+            "count": len(valores), "type": "SCALAR",
+            "min": [min(valores)], "max": [max(valores)],
+        })
+        return len(self.acessores) - 1
+
+    def anim_vec3(self, valores):
+        self._alinhar()
+        inicio = len(self.dados)
+        for v in valores:
+            self.dados += struct.pack("<3f", *v)
+        self.views.append({"buffer": 0, "byteOffset": inicio,
+                           "byteLength": len(self.dados) - inicio})
+        self.acessores.append({
+            "bufferView": len(self.views) - 1, "componentType": 5126,
+            "count": len(valores), "type": "VEC3",
+        })
+        return len(self.acessores) - 1
+
+    def anim_quat(self, valores):
+        self._alinhar()
+        inicio = len(self.dados)
+        for v in valores:
+            self.dados += struct.pack("<4f", *v)
+        self.views.append({"buffer": 0, "byteOffset": inicio,
+                           "byteLength": len(self.dados) - inicio})
+        self.acessores.append({
+            "bufferView": len(self.views) - 1, "componentType": 5126,
+            "count": len(valores), "type": "VEC4",
+        })
+        return len(self.acessores) - 1
+
 
 def montar() -> bytes:
     buf = Buffer()
@@ -325,6 +457,29 @@ def montar() -> bytes:
     raiz = {"name": "Lutador", "children": [por_nome["Quadril"]]}
     nos.append(raiz)
 
+    base_pos = {nome: t for nome, _pai, t, _dims, _centro, _topo, _material in PECAS}
+    animacoes = []
+    for nome_animacao, definicao in ANIMACOES.items():
+        duracao = definicao["duracao"]
+        tempos = [duracao * i / 4.0 for i in range(5)]
+        entrada = buf.escalares(tempos)
+        samplers, channels = [], []
+        for nome_no, tracks in definicao["tracks"].items():
+            if "rot" in tracks:
+                base = POSE.get(nome_no, (0.0, 0.0, 0.0))
+                valores = [euler_para_quaternio(base[0] + d[0], base[1] + d[1], base[2] + d[2])
+                           for d in tracks["rot"]]
+                samplers.append({"input": entrada, "output": buf.anim_quat(valores), "interpolation": "LINEAR"})
+                channels.append({"sampler": len(samplers) - 1,
+                                 "target": {"node": por_nome[nome_no], "path": "rotation"}})
+            if "pos" in tracks:
+                base = base_pos[nome_no]
+                valores = [[base[0] + d[0], base[1] + d[1], base[2] + d[2]] for d in tracks["pos"]]
+                samplers.append({"input": entrada, "output": buf.anim_vec3(valores), "interpolation": "LINEAR"})
+                channels.append({"sampler": len(samplers) - 1,
+                                 "target": {"node": por_nome[nome_no], "path": "translation"}})
+        animacoes.append({"name": nome_animacao, "samplers": samplers, "channels": channels})
+
     gltf = {
         "asset": {"version": "2.0", "generator": "Punch Challenge / gerar_personagem_glb.py"},
         "scene": 0,
@@ -332,6 +487,7 @@ def montar() -> bytes:
         "nodes": nos,
         "meshes": malhas,
         "materials": materiais,
+        "animations": animacoes,
         "accessors": buf.acessores,
         "bufferViews": buf.views,
         "buffers": [{"byteLength": len(buf.dados)}],

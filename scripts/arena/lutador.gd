@@ -140,39 +140,69 @@ func guardar(ativo: bool) -> void:
 	else:
 		_tocar("idle", 0.22)
 
-func bater(forca: float, derruba := false) -> Dictionary:
+func bater(forca: float, derruba := false, pontos := -1) -> Dictionary:
 	var f := clampf(forca, 0.0, 1.0)
 	_recuo = 1.0
 	_forca_do_recuo = f
-	_lado = 1.0 if randf() < 0.5 else -1.0
+	# Alternar o lado mantém variedade sem depender de aleatoriedade: duas
+	# máquinas com o mesmo golpe exibem a mesma intensidade e duração.
+	_lado *= -1.0
 	var antes := dano
 	if f > DANO_MINIMO:
 		dano = clampf(dano + f * DANO_POR_GOLPE, 0.0, 1.0)
 	var nocaute := not _caindo and (derruba or (dano >= 1.0 and antes < 1.0))
+	var papel := ""
+	var desdenhou := false
 	if nocaute:
+		papel = "knockout"
 		_caindo = true
 		_levantando = false
 		_tempo_na_lona = 0.0
 		_tempo_reacao = TEMPO_NA_LONA + TEMPO_LEVANTAR
 		_tocar("knockout", 0.08, lerpf(0.92, 1.12, f))
 	elif not _caindo:
-		var papel := "taunt_weak"
+		# A nota é a linguagem do jogador. Abaixo de 6.000 o adversário
+		# entende que o golpe foi fraco e desdenha, mesmo que a calibração
+		# física da máquina tenha registrado algum movimento. Na lona ele
+		# nunca executa esta resposta: um nocaute não pode virar deboche.
+		papel = reacao_para_pontos(pontos, f)
+		desdenhou = papel == "taunt_weak" and pontos >= 0 and pontos < 6000
 		var duracao := 1.25
-		if f >= 0.82:
-			papel = "stagger"
+		if papel == "taunt_weak":
+			duracao = 1.18
+		elif papel == "stagger":
 			duracao = 1.35
-		elif f >= 0.62:
-			papel = "hit_heavy"
+		elif papel == "hit_heavy":
 			duracao = 1.05
-		elif f >= 0.38:
-			papel = "hit_medium"
+		elif papel == "hit_medium":
 			duracao = 0.82
-		elif f >= 0.18:
-			papel = "hit_light"
+		elif papel == "hit_light":
 			duracao = 0.58
 		_tempo_reacao = duracao
 		_tocar(papel, 0.06, lerpf(0.92, 1.10, f))
-	return {"nocaute": nocaute, "dano": dano}
+	return {"nocaute": nocaute, "dano": dano, "reacao": papel, "desdenhou": desdenhou}
+
+static func reacao_para_pontos(pontos: int, forca: float) -> String:
+	if pontos >= 0 and pontos < 6000:
+		return "taunt_weak"
+	var reacao := reacao_para_forca(forca)
+	# Depois do corte competitivo, no mínimo reconhece o golpe. Isso evita
+	# que uma calibração de velocidade conservadora contradiga os pontos.
+	if pontos >= 6000 and reacao == "taunt_weak":
+		return "hit_light"
+	return reacao
+
+static func reacao_para_forca(forca: float) -> String:
+	var f := clampf(forca, 0.0, 1.0)
+	if f >= 0.82:
+		return "stagger"
+	if f >= 0.62:
+		return "hit_heavy"
+	if f >= 0.38:
+		return "hit_medium"
+	if f >= 0.18:
+		return "hit_light"
+	return "taunt_weak"
 
 func atualizar(delta: float) -> void:
 	_relogio += delta

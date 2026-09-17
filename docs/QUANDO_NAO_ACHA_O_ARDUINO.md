@@ -32,18 +32,31 @@ da etapa 1, em **115200**.
 Tem de aparecer, em segundos:
 
 ```
-READY,PUNCH_MPU6050,V9
+READY,PUNCH_MPU6050,V10
 CALIBRATING,0
 ...
 CALIBRATED,-0.01,0.02,1.00
+OK,MPU
 ```
 
 - **Nada** → baud errado, firmware não gravado, ou a porta é outra.
 - **Caracteres embaralhados** → baud errado. Confira que está em 115200.
 - **`READY` mas nenhum `CALIBRATED`** → veja a etapa 4.
 
+Se o progresso parava sempre em 70% e o jogo voltava a procurar a COM,
+a placa ainda estava com o firmware anterior. Na V10 cada leitura I2C tem
+prazo, o barramento preso é recuperado com nove pulsos e a serial continua
+respondendo. O jogo também fixa a COM assim que recebe o `READY`, sem
+abandonar a placa certa durante a calibração.
+
 > O `READY` sai **antes** de a placa procurar o sensor, de propósito.
 > Ele prova que a **placa** está lá. Não prova sensor nenhum.
+
+O jogo só mostra **PRESSIONE START** quando a COM está aberta, o firmware
+foi reconhecido, o MPU foi confirmado e houve mensagem recente. Se a
+conexão cair durante a contagem, a ficha volta; se cair depois do primeiro
+golpe, essa nota é preservada e a rodada termina sem pedir um segundo
+golpe impossível.
 
 ## 3. O jogo acha um caminho até a placa?
 
@@ -91,6 +104,13 @@ sem nunca firmar. É o caso mais confuso de todos, porque **no PC de quem
 desenvolve ele nunca aparece** — lá a extensão nativa carrega e a ponte
 nunca chega a ser usada. No PC de destino a ponte é o único caminho, e
 era ela que estava quebrada.
+
+Se conecta na abertura e cai exatamente ao entrar na partida, use a
+Build 56 ou posterior. A conexão passou a ser uma sessão única: a mesma
+COM não é reaberta, eventos atrasados da sessão anterior são ignorados e
+nenhuma troca entre extensão e PowerShell acontece da contagem até o fim
+do resultado. A ponte também impede um segundo processo do jogo de tomar
+a serial ao mesmo tempo.
 
 **A solução mais direta é fazer o PC de destino usar a extensão nativa,
 como o seu PC de produção faz.** Um comando, uma vez por máquina:
@@ -174,9 +194,9 @@ problema é **mecânico ou de sensor**, não de comunicação.
    **Adafruit NeoPixel** é opcional: sem ela o sketch compila e o jogo
    funciona, só as fitas de LED ficam desligadas.
 
-O firmware **precisa ser regravado** ao atualizar para a V9: a escala de
-medida mudou, e uma placa com firmware antigo devolve velocidades numa
-faixa que a pontuação atual não espera.
+O firmware **precisa ser regravado** ao atualizar para a V10. Substituir
+somente os arquivos do jogo não altera o programa que já está gravado no
+Arduino; sem essa gravação a proteção contra travamento aos 70% não existe.
 
 ---
 

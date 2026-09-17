@@ -19,6 +19,7 @@
 struct TwoWire {
   void begin();
   void setClock(long);
+  void setWireTimeout(uint32_t, bool);
   void beginTransmission(uint8_t);
   void beginTransmission(int);
   size_t write(uint8_t);

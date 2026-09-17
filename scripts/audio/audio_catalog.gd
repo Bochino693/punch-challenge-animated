@@ -28,7 +28,8 @@ const EXTRA := [
 	# subgrave — o que faltava era o CORPO: o baque de quem leva, a
 	# queda na lona e a plateia reagindo. Sem eles o lutador aparecia
 	# na tela mas o ouvido continuava batendo num saco de areia.
-	"arena_corpo", "arena_queda", "arena_publico",
+	"arena_corpo", "arena_queda", "arena_publico", "torcida_desdenho",
+	"torcida_recorde", "torcida_podio", "torcida_top10", "torcida_top20",
 ]
 const LOOPS := ["music", "charge", "score_loop"]
 const ROOT := "res://assets/audio/arcade/"

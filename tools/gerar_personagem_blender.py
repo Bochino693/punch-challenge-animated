@@ -11,6 +11,7 @@ nove acoes. Nao depende de addons.
 
 import bpy
 import math
+import warnings
 from mathutils import Vector
 from pathlib import Path
 
@@ -21,6 +22,11 @@ FPS = 30
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 scene.render.fps = FPS
+
+# O Blender 5.2 ainda exige `use_nodes` para ativar o material por nós,
+# mas já avisa que a propriedade sairá no 6.0. O aviso não representa
+# falha e só confundia o diagnóstico real do gerador.
+warnings.filterwarnings("ignore", message=".*Material.use_nodes.*", category=DeprecationWarning)
 
 
 def material(name, color, roughness=0.55, metallic=0.0):
@@ -42,7 +48,11 @@ BLACK = material("Shorts_Preto", (0.012, 0.016, 0.025), 0.24, 0.08)
 WHITE = material("Faixa_Branca", (0.92, 0.94, 0.96), 0.34)
 HAIR = material("Cabelo", (0.006, 0.009, 0.018), 0.32)
 BLUE = material("Detalhe_Azul", (0.0, 0.18, 0.78), 0.30, 0.08)
-EYE = material("Olhos", (0.035, 0.018, 0.012), 0.25)
+EYE_WHITE = material("Branco_dos_Olhos", (0.96, 0.91, 0.82), 0.28)
+EYE = material("Pupilas", (0.035, 0.018, 0.012), 0.22)
+MOUTH = material("Boca", (0.16, 0.012, 0.018), 0.38)
+LIP = material("Labios", (0.42, 0.045, 0.035), 0.40)
+TOOTH = material("Protetor_Bucal", (0.88, 0.92, 0.96), 0.30)
 
 
 BONES = [
@@ -52,14 +62,17 @@ BONES = [
     ("chest", "spine", (0, 0, 1.18), (0, 0, 1.48)),
     ("neck", "chest", (0, 0, 1.48), (0, 0, 1.59)),
     ("head", "neck", (0, 0, 1.59), (0, 0, 1.82)),
-    ("shoulder_l", "chest", (-0.08, 0, 1.43), (-0.27, 0, 1.43)),
-    ("upperarm_l", "shoulder_l", (-0.27, 0, 1.43), (-0.55, 0, 1.27)),
-    ("forearm_l", "upperarm_l", (-0.55, 0, 1.27), (-0.73, -0.01, 1.07)),
-    ("hand_l", "forearm_l", (-0.73, -0.01, 1.07), (-0.78, -0.02, 0.96)),
-    ("shoulder_r", "chest", (0.08, 0, 1.43), (0.27, 0, 1.43)),
-    ("upperarm_r", "shoulder_r", (0.27, 0, 1.43), (0.55, 0, 1.27)),
-    ("forearm_r", "upperarm_r", (0.55, 0, 1.27), (0.73, -0.01, 1.07)),
-    ("hand_r", "forearm_r", (0.73, -0.01, 1.07), (0.78, -0.02, 0.96)),
+    # A pose de repouso JÁ É A GUARDA: cotovelos junto ao tronco e luvas
+    # na frente do rosto. Assim até um visualizador que não toque a action
+    # `guard` mostra um boxeador, não um boneco de braços abertos.
+    ("shoulder_l", "chest", (-0.08, 0, 1.43), (-0.29, -0.02, 1.42)),
+    ("upperarm_l", "shoulder_l", (-0.29, -0.02, 1.42), (-0.46, -0.10, 1.18)),
+    ("forearm_l", "upperarm_l", (-0.46, -0.10, 1.18), (-0.29, -0.25, 1.40)),
+    ("hand_l", "forearm_l", (-0.29, -0.25, 1.40), (-0.22, -0.29, 1.50)),
+    ("shoulder_r", "chest", (0.08, 0, 1.43), (0.29, -0.02, 1.42)),
+    ("upperarm_r", "shoulder_r", (0.29, -0.02, 1.42), (0.46, -0.10, 1.18)),
+    ("forearm_r", "upperarm_r", (0.46, -0.10, 1.18), (0.29, -0.25, 1.40)),
+    ("hand_r", "forearm_r", (0.29, -0.25, 1.40), (0.22, -0.29, 1.50)),
     ("thigh_l", "hips", (-0.14, 0, 0.80), (-0.15, 0, 0.43)),
     ("shin_l", "thigh_l", (-0.15, 0, 0.43), (-0.16, 0, 0.10)),
     ("foot_l", "shin_l", (-0.16, 0, 0.10), (-0.16, -0.18, 0.04)),
@@ -68,8 +81,8 @@ BONES = [
     ("shin_r", "thigh_r", (0.15, 0, 0.43), (0.16, 0, 0.10)),
     ("foot_r", "shin_r", (0.16, 0, 0.10), (0.16, -0.18, 0.04)),
     ("toe_r", "foot_r", (0.16, -0.18, 0.04), (0.16, -0.30, 0.04)),
-    ("glove_l", "hand_l", (-0.78, -0.02, 0.96), (-0.79, -0.04, 0.88)),
-    ("glove_r", "hand_r", (0.78, -0.02, 0.96), (0.79, -0.04, 0.88)),
+    ("glove_l", "hand_l", (-0.22, -0.29, 1.50), (-0.20, -0.31, 1.59)),
+    ("glove_r", "hand_r", (0.22, -0.29, 1.50), (0.20, -0.31, 1.59)),
 ]
 
 arm_data = bpy.data.armatures.new("Esqueleto_Humanoide")
@@ -124,6 +137,19 @@ def segment(name, a, b, radius, mat, bone, vertices=20):
     return finish_part(obj, name, mat, bone)
 
 
+def muscle(name, a, b, radius, mat, bone):
+    """Volume orgânico acompanhando o osso, sem parecer um cano."""
+    a, b = Vector(a), Vector(b)
+    delta = b - a
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=24, ring_count=16, location=(a + b) * 0.5)
+    obj = bpy.context.object
+    obj.scale = (radius * 1.10, radius * 0.92, delta.length * 0.55)
+    obj.rotation_mode = "QUATERNION"
+    obj.rotation_quaternion = delta.to_track_quat("Z", "Y")
+    obj.rotation_mode = "XYZ"
+    return finish_part(obj, name, mat, bone)
+
+
 def torus(name, loc, major, minor, mat, bone):
     bpy.ops.mesh.primitive_torus_add(major_radius=major, minor_radius=minor, major_segments=24, minor_segments=8, location=loc)
     return finish_part(bpy.context.object, name, mat, bone)
@@ -134,9 +160,19 @@ ellipsoid("Cabeca", (0, -0.005, 1.70), (0.155, 0.13, 0.20), SKIN_LIGHT, "head", 
 ellipsoid("Mandibula", (0, -0.105, 1.64), (0.125, 0.065, 0.10), SKIN, "head", 20, 12)
 ellipsoid("Nariz", (0, -0.137, 1.71), (0.035, 0.035, 0.055), SKIN_LIGHT, "head", 16, 10)
 for x in (-0.056, 0.056):
-    ellipsoid("Olho", (x, -0.128, 1.745), (0.025, 0.012, 0.014), EYE, "head", 12, 8)
+    ellipsoid("Olho", (x, -0.130, 1.745), (0.041, 0.014, 0.030), EYE_WHITE, "head", 16, 10)
+    ellipsoid("Pupila", (x, -0.144, 1.744), (0.014, 0.008, 0.017), EYE, "head", 12, 8)
+    # Sobrancelha inclinada: expressão determinada, legível de longe.
+    segment("Sobrancelha", (x - 0.035, -0.148, 1.790 + 0.010 * (-1 if x < 0 else 1)),
+            (x + 0.035, -0.148, 1.790 - 0.010 * (-1 if x < 0 else 1)),
+            0.009, HAIR, "head", 10)
 for x in (-0.12, 0.12):
     ellipsoid("Orelha", (x, -0.002, 1.70), (0.027, 0.018, 0.048), SKIN, "head", 12, 8)
+# Boca completa em três planos: abertura, lábio e protetor branco. A leve
+# assimetria evita o rosto de manequim e reforça o estilo cartoon.
+segment("Boca", (-0.060, -0.139, 1.635), (0.060, -0.139, 1.629), 0.011, MOUTH, "head", 12)
+ellipsoid("Labio_Inferior", (0.004, -0.143, 1.614), (0.070, 0.012, 0.018), LIP, "head", 16, 8)
+ellipsoid("Protetor_Bucal", (0.008, -0.151, 1.636), (0.047, 0.008, 0.010), TOOTH, "head", 14, 8)
 
 # Cabelo em mechas cônicas, claramente não cúbico.
 for i in range(15):
@@ -167,16 +203,18 @@ for x in (-0.285, 0.285):
 
 # Braços, deltoides, antebraços e luvas.
 for side, sign in (("l", -1), ("r", 1)):
-    shoulder = (0.30 * sign, 0, 1.41)
-    elbow = (0.55 * sign, 0, 1.27)
-    wrist = (0.73 * sign, -0.01, 1.07)
-    ellipsoid("Deltoide", shoulder, (0.15, 0.15, 0.17), SKIN_LIGHT, f"upperarm_{side}", 20, 14)
-    segment("Braco", shoulder, elbow, 0.12, SKIN, f"upperarm_{side}")
+    shoulder = (0.30 * sign, -0.02, 1.41)
+    elbow = (0.46 * sign, -0.10, 1.18)
+    wrist = (0.29 * sign, -0.25, 1.40)
+    ellipsoid("Deltoide", shoulder, (0.18, 0.17, 0.20), SKIN_LIGHT, f"upperarm_{side}", 22, 14)
+    segment("Braco_Base", shoulder, elbow, 0.120, SKIN, f"upperarm_{side}")
+    muscle("Biceps", shoulder, elbow, 0.160, SKIN_LIGHT, f"upperarm_{side}")
     ellipsoid("Cotovelo", elbow, (0.105, 0.10, 0.105), SKIN, f"forearm_{side}", 16, 10)
-    segment("Antebraco", elbow, wrist, 0.105, SKIN_LIGHT, f"forearm_{side}")
-    ellipsoid("Luva", (0.79 * sign, -0.025, 0.98), (0.17, 0.15, 0.19), RED, f"glove_{side}", 24, 16)
-    ellipsoid("Punho_Luva", (0.73 * sign, -0.005, 1.08), (0.115, 0.11, 0.105), RED_DARK, f"hand_{side}", 18, 12)
-    ellipsoid("Polegar", (0.70 * sign, -0.145, 0.99), (0.07, 0.07, 0.10), RED_DARK, f"glove_{side}", 14, 10)
+    segment("Antebraco_Base", elbow, wrist, 0.108, SKIN, f"forearm_{side}")
+    muscle("Antebraco", elbow, wrist, 0.140, SKIN_LIGHT, f"forearm_{side}")
+    ellipsoid("Luva", (0.21 * sign, -0.31, 1.54), (0.18, 0.17, 0.20), RED, f"glove_{side}", 26, 18)
+    ellipsoid("Punho_Luva", (0.28 * sign, -0.26, 1.43), (0.115, 0.11, 0.11), RED_DARK, f"hand_{side}", 18, 12)
+    ellipsoid("Polegar", (0.10 * sign, -0.37, 1.50), (0.072, 0.075, 0.105), RED_DARK, f"glove_{side}", 16, 10)
 
 # Pernas atléticas e botas.
 for side, sign in (("l", -1), ("r", 1)):
@@ -188,7 +226,7 @@ for side, sign in (("l", -1), ("r", 1)):
     segment("Canela", knee, ankle, 0.105, SKIN, f"shin_{side}", 20)
     ellipsoid("Bota", (0.16 * sign, -0.09, 0.12), (0.125, 0.19, 0.14), BLACK, f"foot_{side}", 20, 12)
     ellipsoid("Biqueira", (0.16 * sign, -0.22, 0.08), (0.13, 0.15, 0.085), RED_DARK, f"toe_{side}", 18, 10)
-    torus("Cano_Bota", (0.16 * sign, 0, 0.22), 0.10, RED, f"shin_{side}")
+    torus("Cano_Bota", (0.16 * sign, 0, 0.22), 0.10, 0.025, RED, f"shin_{side}")
 
 # Junta todas as partes em UMA malha skinned, mantendo materiais e grupos.
 bpy.ops.object.select_all(action="DESELECT")
@@ -236,11 +274,10 @@ def action(name, length, keys, loop=False):
     for frame, rotations, locations in keys:
         reset_pose()
         pose(frame, rotations, locations)
-    for curve in act.fcurves:
-        for point in curve.keyframe_points:
-            point.interpolation = "BEZIER"
-        if loop:
-            curve.modifiers.new("CYCLES")
+    # Não percorremos `Action.fcurves`: esse acesso legado foi depreciado
+    # pelo sistema de Actions em camadas do Blender 5.x. Os keyframes já
+    # nascem em Bezier, e idle/guard são repetidos pelo AnimationPlayer do
+    # jogo, então o modificador CYCLES não é necessário no GLB exportado.
     track = arm.animation_data.nla_tracks.new()
     track.name = name
     strip = track.strips.new(name, 1, act)
@@ -255,17 +292,22 @@ action("idle", 90, [
     (90, {"chest": (0.01, 0, 0), "hips": (0, 0, -0.025)}, {}),
 ], True)
 action("guard", 60, [
-    (1, {"upperarm_l": (-0.25, -0.30, -0.70), "forearm_l": (-1.15, 0, 0),
-         "upperarm_r": (-0.25, 0.30, 0.70), "forearm_r": (-1.15, 0, 0)}, {}),
-    (30, {"chest": (-0.025, 0, 0.025), "hips": (0.025, 0, 0),
-          "upperarm_l": (-0.28, -0.30, -0.72), "forearm_l": (-1.17, 0, 0),
-          "upperarm_r": (-0.28, 0.30, 0.72), "forearm_r": (-1.17, 0, 0)}, {}),
-    (60, {"upperarm_l": (-0.25, -0.30, -0.70), "forearm_l": (-1.15, 0, 0),
-          "upperarm_r": (-0.25, 0.30, 0.70), "forearm_r": (-1.15, 0, 0)}, {}),
+    (1, {"chest": (0.01, 0, 0), "head": (0.02, 0, 0)}, {}),
+    (30, {"chest": (-0.030, 0, 0.018), "hips": (0.018, 0, 0),
+          "upperarm_l": (-0.035, 0, -0.025), "forearm_l": (-0.025, 0, 0),
+          "upperarm_r": (-0.035, 0, 0.025), "forearm_r": (-0.025, 0, 0)}, {}),
+    (60, {"chest": (0.01, 0, 0), "head": (0.02, 0, 0)}, {}),
 ], True)
 action("taunt_weak", 42, [
     (1, {"head": (0, 0, 0)}, {}),
-    (18, {"head": (0.10, 0, -0.24), "chest": (0, 0, 0.08), "forearm_l": (-0.55, 0, 0)}, {}),
+    # Baixa uma luva, inclina o tronco e nega duas vezes com a cabeça.
+    # A silhueta muda bastante mesmo vista de longe no gabinete.
+    (10, {"head": (0.06, -0.34, -0.10), "chest": (0.05, 0, 0.10),
+          "upperarm_l": (0.30, 0, 0.20), "forearm_l": (-0.80, 0, 0.10)}, {}),
+    (20, {"head": (0.08, 0.31, 0.09), "chest": (0.03, 0, -0.07),
+          "upperarm_l": (0.36, 0, 0.24), "forearm_l": (-0.92, 0, 0.12)}, {}),
+    (30, {"head": (0.06, -0.24, -0.07), "chest": (0.04, 0, 0.08),
+          "upperarm_l": (0.28, 0, 0.18), "forearm_l": (-0.72, 0, 0.08)}, {}),
     (42, {"head": (0, 0, 0)}, {}),
 ])
 action("hit_light", 20, [(1, {}, {}), (7, {"head": (-0.22, 0.18, 0.16), "chest": (-0.08, 0, 0)}, {}), (20, {}, {})])

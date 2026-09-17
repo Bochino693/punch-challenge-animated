@@ -20,7 +20,10 @@ falhou=0
 
 echo "--- todo arquivo de texto e UTF-8 valido? ---"
 for f in $(git ls-files '*.gd' '*.md' '*.cfg' '*.godot' '*.gdshader' '*.txt'); do
-  if ! iconv -f UTF-8 -t UTF-8 "$f" > /dev/null 2>&1; then
+	# Durante uma atualização, o índice ainda pode listar um arquivo que já
+	# foi removido do disco. Ausência não é erro de codificação.
+	[ -f "$f" ] || continue
+	if ! iconv -f UTF-8 -t UTF-8 "$f" > /dev/null 2>&1; then
     echo "    NAO E UTF-8: $f"
     falhou=1
   fi

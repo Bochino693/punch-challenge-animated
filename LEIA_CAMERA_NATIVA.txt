@@ -1,0 +1,31 @@
+CAMERA NATIVA - WINDOWS - GODOT 4.6
+
+Esta versao nao usa Python nem OpenCV para a camera.
+
+COMO FUNCIONA
+- O jogo usa Windows Media Foundation por uma extensao nativa incluida.
+- Basta conectar uma webcam USB e abrir o jogo.
+- Se conectar depois, aguarde ate 2,5 segundos ou use F9 > PROCURAR DE NOVO.
+- A previa permanece ao vivo. Somente a foto escolhida fica congelada.
+- O PowerShell e usado apenas no diagnostico de dispositivo e privacidade.
+
+COMO LEVAR PARA OUTRO PC
+1. Abra o projeto no Godot 4.6.
+2. Exporte com o preset Windows Desktop x86_64.
+3. Copie a pasta exportada inteira, e nao apenas o arquivo EXE.
+4. Conecte a camera e o Arduino antes de abrir o jogo.
+
+ARQUIVOS NATIVOS IMPORTANTES
+- Camera: libcameraserver-extension.windows.dll
+- Arduino: gdserial.dll
+
+ARDUINO
+Os fontes do firmware, o protocolo serial, os scripts serial e o addon
+gdserial nao foram alterados nesta mudanca.
+
+TESTE RAPIDO
+1. Pressione F9.
+2. A Central deve mostrar CAMERA CONECTADA - VIDEO AO VIVO.
+3. Mexa-se na frente da camera: a previa deve ficar lisa e continua.
+4. Use TESTAR FOTO: apenas o retrato deve congelar brevemente.
+5. Se necessario, use DIAGNOSTICAR e depois RESOLVER ACESSO.

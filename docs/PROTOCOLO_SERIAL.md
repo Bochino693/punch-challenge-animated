@@ -146,7 +146,7 @@ golpes realmente próximos da velocidade máxima.
 | Sintoma | Onde olhar |
 | --- | --- |
 | Tela em `PROCURANDO ARDUINO…` | Nenhuma porta serial visível. Cabo, driver CH340/FTDI, ou a extensão `gdserial` não carregou. |
-| `AGUARDANDO READY` e não sai dali | Porta abriu, mas nada chega. Confira a velocidade (115200) e se o `.ino` gravado é o V2. |
+| `AGUARDANDO READY` e não sai dali | Porta abriu, mas nada chega. Confira a velocidade (115200) e se o `.ino` gravado é o V10. |
 | `SEM RESPOSTA` depois de funcionar | A placa travou ou o cabo soltou. O jogo continua tentando sozinho. |
 | `ERROR,NO_MPU` | O MPU-6050 não respondeu no I2C. Confira SDA em A4, SCL em A5 e a alimentação. |
 | `SATURATION` a cada golpe forte | O sensor está no fundo de escala. A medida sai menor que a real: afaste o sensor do ponto de impacto. |
@@ -281,29 +281,18 @@ fitas não acendem" — era "o Arduino não faz nada".
 Antes de qualquer entrega, `sh tools/conferir_firmware.sh` compila o
 sketch nas duas situações, fora da IDE, e confere que ele é ASCII puro.
 
-### O vermelho que aparecia a cada gravação
+### Por que a calibração não pode mais congelar aos 70%
 
-A IDE despejava meia tela de `note: candidate 1 / candidate 2` sobre
-`Wire.requestFrom`. **Não era erro** — o sketch compilava e gravava —, mas
-também não era ruído inofensivo: era o compilador dizendo que **não sabia
-qual das duas funções você quis**.
+Em alguns cores AVR, uma chamada da biblioteca Wire pode esperar para
+sempre se SDA ou SCL ficarem presos. Nesse instante o Arduino para junto:
+não responde `PING`, o jogo fecha a COM, a reabertura reinicia a placa e a
+calibração começa novamente.
 
-A biblioteca Wire declara `requestFrom(int, int)` e
-`requestFrom(uint8_t, uint8_t)`. Chamando com `MPU_ADDR` (que é um
-`#define`, portanto `int`) e um `(uint8_t)` no segundo argumento, nenhuma
-das duas é melhor: a primeira precisa promover um argumento, a segunda
-precisa converter o outro. Um dia o compilador escolhe a outra, o
-endereço vira um `int` truncado, e o defeito aparece como "o sensor parou
-de ler" numa máquina que estava boa.
-
-Com os dois argumentos em `uint8_t`, só uma versão serve e a compilação
-sai limpa.
-
-E o `conferir_firmware.sh` passou a rodar com `-Werror`: **aviso ali é
-erro**. Um aviso que aparece toda vez que se grava a placa é um aviso que
-o operador aprende a ignorar — e no meio deles vai o que importava. O
-cabeçalho falso do Wire declara as duas versões de propósito, justamente
-para essa ambiguidade ser pega aqui e não na sua tela.
+O firmware V10 usa um mestre I2C pequeno nos mesmos pinos A4/A5, a cerca
+de 100 kHz. Toda espera tem prazo de 3 ms. Se o barramento prender, a
+leitura falha, a placa envia pulsos de recuperação e continua atendendo a
+serial e os botões. Essa proteção não depende da versão da IDE ou da
+biblioteca Wire instalada no computador.
 
 ---
 
@@ -333,9 +322,9 @@ Agora:
 
 - o **`READY` sai primeiro**, antes de tocar no sensor;
 - sem sensor a placa **continua no ar** — botões, crédito, serial, fitas;
-- ela **tenta o sensor de novo a cada 2 s** e manda `OK,MPU` quando ele
-  aparece, então um fio de I2C encaixado de volta volta a funcionar sem
-  desligar nada;
+- ela **tenta o sensor de novo a cada 2 s** e manda `OK,MPU` tanto no
+  arranque bem-sucedido quanto quando ele reaparece, então um fio de I2C
+  encaixado de volta volta a funcionar sem desligar nada;
 - o LED de D13 pisca enquanto faltar sensor.
 
 E o sensor é procurado nos **dois endereços** (0x68 e 0x69 — o AD0 solto
@@ -347,10 +336,21 @@ MPU-9250 ou ICM-20608, devolve 0x70/0x71/0x73/0x98 e mede igual: exigir
 ### `READY` não quer mais dizer "sensor presente"
 
 São duas coisas diferentes agora, e a aba **DADOS** mostra as duas
-separadas. Quem desliga a simulação de bancada é o **`OK,MPU`** ou o
-primeiro golpe medido — nunca o `READY`. Se fosse o `READY`, uma máquina
-sem sensor perderia a barra de espaço e não sobraria jeito nenhum de
-jogar nela.
+separadas. O START só libera depois de **`CALIBRATED`** ou de uma leitura
+completa (`TELEMETRY`/`NOISE`) — nunca apenas por `READY` ou `OK,MPU`. A porta pode continuar viva
+para diagnóstico e botões sem vender uma partida que não conseguirá
+medir.
+
+O jogo guarda, no arquivo local daquele Windows, a última COM e o último
+backend que chegaram ao sensor. Eles entram primeiro no próximo boot,
+mas são apenas preferência: três quedas em dois minutos revogam o
+caminho e fazem a máquina experimentar automaticamente o outro backend.
+
+Da aceitação do START até o fim do resultado, essa descoberta fica
+congelada: existe um único proprietário da COM. O jogo continua lendo o
+sensor e enviando `PING`, mas não reabre a porta, não pulsa DTR e não troca
+entre extensão e PowerShell no meio da rodada. Um evento atrasado de
+fechamento de uma sessão anterior também não pode encerrar a sessão nova.
 
 ---
 
@@ -516,11 +516,11 @@ visita de quem cuida da máquina:
 
 ### Forçar um caminho
 
-`PUNCH_SERIAL=ponte` na variável de ambiente pula a extensão nativa mesmo
-que ela tenha carregado, e `PUNCH_SERIAL=nativa` faz o contrário. Serve
-para comparar os dois no mesmo gabinete sem trocar arquivo de lugar —
-e, quando posto, ele manda: nem a troca automática de caminho o
-contraria, senão não haveria como comparar.
+Somente para diagnóstico, defina `PUNCH_SERIAL_DIAGNOSTICO=1` junto com
+`PUNCH_SERIAL=ponte` ou `PUNCH_SERIAL=nativa`. Sem a primeira chave, o
+jogo ignora uma preferência antiga esquecida no Windows e mantém a
+seleção adaptativa. No modo de diagnóstico a escolha é forçada para
+permitir comparar os dois caminhos no mesmo gabinete.
 
 ### Como isto é conferido
 
@@ -557,7 +557,7 @@ Num PC recém-formatado, sem Python e sem nada:
 | START, CRÉDITO, sensor de soco, fitas de LED | **Sim**, sempre — pela extensão nativa ou pela ponte do sistema |
 | Ranking, pontuação, som, todas as telas | **Sim**, sempre |
 | Foto pela câmera nativa | Sim, se o Windows entregar imagem |
-| Foto pela ponte | Só com Python + OpenCV |
+| Foto da câmera | Nativa via Windows Media Foundation, sem Python |
 
 Sem foto, o ranking mostra a silhueta desenhada e o jogo segue inteiro.
 

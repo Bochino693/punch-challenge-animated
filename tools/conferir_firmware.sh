@@ -28,7 +28,7 @@ cp "$sketch" "$tmp/sketch.cpp"
 # reclamacao, e este verificador chegou a dar FIRMWARE_OK para um sketch
 # que um script meu tinha truncado a zero byte. "Compila" nao quer dizer
 # "existe": sem `setup()` e `loop()` nao ha firmware nenhum.
-for peca in "void setup" "void loop" "processarBotoes" "BUTTON,START" "BUTTON,CREDIT"; do
+for peca in "void setup" "void loop" "processarBotoes" "BUTTON,START" "BUTTON,CREDIT" "OK,MPU"; do
   if ! grep -q "$peca" "$sketch"; then
     echo "FALTA no sketch: $peca"
     exit 1
@@ -62,6 +62,13 @@ echo "    compila."
 echo "--- com a biblioteca das fitas ---"
 g++ -fsyntax-only -Werror -Wall -Wno-cpp -I"$stub" -I"$stub/comlib" -include "$stub/Arduino.h" -std=gnu++11 "$tmp/sketch.cpp"
 echo "    compila."
+
+echo "--- I2C seguro sem dependencia de Wire ---"
+if grep -qE '#include *<Wire\.h>|Wire\.' "$tmp/sem_comentario.cpp"; then
+  echo "    NAO: Wire pode bloquear a placa sem prazo em cores AVR antigos."
+  exit 1
+fi
+echo "    usa o mestre I2C com prazo."
 
 echo "--- o sketch e ASCII puro? ---"
 if LC_ALL=C grep -qP '[^\x00-\x7F]' "$sketch"; then

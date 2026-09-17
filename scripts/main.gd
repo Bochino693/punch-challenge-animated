@@ -122,7 +122,7 @@ const BOTOES_SIMPLES := {
 	"foto_teste": Rect2(670, 410, 300, 60),
 	# Três na mesma linha: a exigência da câmera nasceu aqui e não cabia
 	# numa faixa nova sem empurrar a prévia para cima do diagnóstico.
-	"forcar_ponte": Rect2(110, 484, 280, 56),
+	"espelhar_camera": Rect2(110, 484, 280, 56),
 	"sondar_camera": Rect2(400, 484, 280, 56),
 	"camera_obrigatoria": Rect2(690, 484, 280, 56),
 	"diagnosticar": Rect2(110, 920, 400, 56),
@@ -150,7 +150,7 @@ const PAGINA_DO_CONTROLE := {
 	"porta": 1, "eixo": 1, "raio": 1, "amin": 1, "enviar_config": 1, "testar": 1,
 	"calibrar": 1,
 	"camera": 2, "trocar_camera": 2, "foto_teste": 2,
-	"forcar_ponte": 2, "sondar_camera": 2, "instalar_camera": 2, "diagnosticar": 2,
+	"espelhar_camera": 2, "sondar_camera": 2, "instalar_camera": 2, "diagnosticar": 2,
 	"camera_obrigatoria": 2,
 	"vol_musica": 2, "vol_efeitos": 2, "testar_som": 2,
 	"zerar": 3, "zerar_stats": 3, "zerar_ranking": 3, "reconectar": 3,
@@ -238,6 +238,12 @@ var sensor_vmin := ScoreCurve.DEFAULT_MIN_SPEED
 var sensor_amin := 3.0
 ## Porta serial configurada; "" = automática (primeira disponível).
 var porta_configurada := ""
+## O par que efetivamente chegou ao MPU neste computador. É preferência,
+## nunca cadeado: se mudar a COM ou o backend falhar, a busca inteira
+## continua. Ao religar a máquina, evita começar do zero sem sacrificar
+## a portabilidade do pacote para outro Windows.
+var porta_serial_conhecida := ""
+var caminho_serial_conhecido := ""
 
 var countdown_left := 3.0
 var last_count := 3
@@ -261,6 +267,10 @@ var credito_gasto := false
 ## exatamente onde estava — e a segunda tentativa continua valendo a pena,
 ## porque ela pode substituir a primeira.
 const SOCOS_POR_RODADA := 2
+## Verdade quando uma queda do sensor encerrou a rodada depois do
+## primeiro golpe. A nota já conquistada vale, mas a máquina não rearma
+## uma segunda tentativa impossível.
+var rodada_encerrada_antecipadamente := false
 ## QUANTO O RESULTADO DE UM SOCO FICA À VISTA ANTES DE PEDIR O PRÓXIMO.
 ##
 ## Contado a partir do VEREDITO, não do golpe: o placar já subiu e o nome
@@ -365,7 +375,7 @@ const TRANSICAO_DURACAO := 0.38
 var result_score := 0
 var result_speed := 0.0
 var result_simulado := false
-## Posição conquistada no ranking (1 a 5), ou 0 se o golpe não entrou.
+## Posição conquistada no ranking (1 a 20), ou 0 se o golpe não entrou.
 var posicao_no_ranking := 0
 var displayed_score := 0.0
 var animation_time := 0.0
@@ -402,6 +412,13 @@ var portas_visiveis: PackedStringArray = []
 var pino_start := false
 var pino_credito := false
 var sensor_presente := false
+## Assim que o firmware se identifica, esta COM deixa de ser uma candidata:
+## ela e a placa. Durante a calibracao o jogo pode esperar ou reabrir essa
+## mesma porta, mas nunca volta a passear por Bluetooth e portas virtuais.
+var porta_arduino_identificada := ""
+var placa_calibrando := false
+var progresso_calibracao := 0
+var mensagem_sensor_publica := ""
 var serial_start := 0
 var serial_credito := 0
 ## Quando a porta atual foi CONFIRMADA aberta. Serve para desistir dela.
@@ -437,11 +454,18 @@ var _proxima_escolha_de_caminho := 0.0
 var _cega_liberada := false
 ## ESTE CAMINHO JÁ ENTREGOU UMA LINHA DE VERDADE NESTA MÁQUINA?
 ##
-## Se já, ele está provado e não se troca mais — nem depois de um silêncio
-## longo. Um caminho que funcionou uma vez volta a funcionar quando o
-## cabo voltar; trocá-lo por causa de uma queda seria jogar fora a única
-## coisa que se sabe sobre esta máquina.
+## Uma linha impede troca por simples demora de descoberta. Quedas
+## repetidas, porém, revogam essa prova pelo disjuntor abaixo: "funcionou
+## uma vez" não pode condenar a máquina a oscilar a noite inteira.
 var _caminho_provado := false
+## Um caminho que entrega uma linha e cai sem parar não está provado.
+## Três quedas em dois minutos abrem o disjuntor e fazem o jogo tentar o
+## outro backend, sem reiniciar o programa nem consumir partida.
+var _quedas_do_caminho: Array[int] = []
+var _troca_de_caminho_pendente := false
+const QUEDAS_ATE_TROCAR_CAMINHO := 3
+const JANELA_DE_QUEDAS_MS := 120000
+
 ## A PLACA JÁ FALOU NESTA PORTA? Substitui a pergunta antiga, que era
 ## `"CONECTADO" in serial_status` — e além de frágil ela estava errada:
 ## "DESCONECTADO" contém "CONECTADO", então a frase que diz que a placa
@@ -468,38 +492,13 @@ var camera_obrigatoria := true
 ## na primeira tentativa — e a foto da primeira partida da noite sai
 ## igual à da centésima.
 var camera_index := 0
-var camera_backend := ""
-## O interpretador que o diagnóstico provou ter OpenCV, guardado entre
-## sessões. Sem ele, toda vez que a máquina liga a ponte recomeça a
-## adivinhar qual Python usar.
 ## O teto de efeitos escolhido na Central, guardado entre sessões.
 var teto_efeitos := "AUTO"
-var camera_python := ""
-var camera_python_args := ""
 var camera_mirrored := true
-## Pula o CameraServer e vai direto à ponte Python. Guardado em disco:
-## numa máquina em que o caminho nativo nunca funciona, ligar isso uma
-## vez tem de valer para sempre.
-## O CAMINHO NATIVO VEM PRIMEIRO — PORQUE ELE NÃO PRECISA DE PYTHON.
-##
-## Esta chave já esteve nas duas posições, e a razão de voltar atrás é a
-## que mais importa numa máquina de salão: A PONTE EXIGE PYTHON E OPENCV
-## INSTALADOS. Num PC recém-formatado, ou no notebook que se leva para uma
-## festa, isso não existe — e uma máquina que só fotografa em computador
-## preparado não serve para um negócio que roda em computador qualquer.
-##
-## Antes eu tinha posto a ponte na frente no Windows porque o caminho
-## nativo enumerava a câmera e entregava quadro PRETO. Só que a essa
-## altura o preto passava despercebido: hoje existe a checagem de
-## contraste, e um feed que não entrega imagem de verdade é reprovado em
-## dois segundos e meio e cai para a ponte sozinho.
-##
-## Então a ordem certa é: tenta o nativo, que não precisa de nada
-## instalado; se ele não provar que funciona, a ponte entra como reserva.
-## O pior caso são dois segundos e meio na abertura; o melhor caso é uma
-## máquina que fotografa num PC sem nada.
-var camera_forcar_ponte := false
-var camera_ponte_escolhida := false
+## Na Central, TESTAR FOTO congela somente o retrato capturado por um breve
+## instante. Fora desse intervalo a prévia permanece ao vivo.
+var foto_teste_texture: ImageTexture = null
+var foto_teste_ate_ms := 0
 ## Quem roda os comandos de diagnóstico e publica a resposta na tela.
 var medico: CameraDoctor
 var statistics: Dictionary = {}
@@ -623,14 +622,7 @@ func _ready() -> void:
 	camera_service = CameraService.new()
 	camera_service.enabled = camera_enabled
 	camera_service.selected_index = camera_index
-	camera_service.backend_preferido = camera_backend
-	if not camera_python.is_empty():
-		var guardados := PackedStringArray()
-		for a in camera_python_args.split(",", false):
-			guardados.append(str(a))
-		camera_service.adotar_python(camera_python, guardados)
 	camera_service.mirrored = camera_mirrored
-	camera_service.forcar_ponte = camera_forcar_ponte
 	add_child(camera_service)
 	medico = CameraDoctor.new()
 	medico.terminou.connect(_fim_do_exame)
@@ -676,6 +668,8 @@ func _montar_arena() -> void:
 	var cena := load(caminho)
 	if cena is PackedScene and arena.instalar(cena as PackedScene):
 		arena.preparar()
+		if not arena.modelo_avancado():
+			push_warning("Personagem leve ativo. Execute GERAR_PERSONAGEM.bat e reabra o Godot para usar o humanoide Blender.")
 	else:
 		push_warning("Arena: %s não abriu como cena 3D" % caminho)
 
@@ -692,7 +686,7 @@ func _arena_no_ar() -> bool:
 		return false
 	if state == GameDef.State.RESULT and verdict_time >= 2.5:
 		return false
-	return state in [GameDef.State.ARMED, GameDef.State.MEASURING, GameDef.State.RESULT]
+	return state in [GameDef.State.COUNTDOWN, GameDef.State.ARMED, GameDef.State.MEASURING, GameDef.State.RESULT]
 
 func _exit_tree() -> void:
 	if link != null:
@@ -785,6 +779,11 @@ func _process(delta: float) -> void:
 	# tempo do quadro, e a máquina anda no seu próprio ritmo real, só mais
 	# aos trancos quando o PC está fraco — o que é honesto, e não lento.
 	var passo := minf(delta, 0.1)
+	# A serial recebe prioridade no começo do quadro. A câmera e a arena
+	# podem custar milissegundos; o evento físico não deve esperar por elas.
+	animation_time += passo
+	state_time += passo
+	_poll_serial(passo)
 	# O cenário é a camada mais cara do jogo; quando a máquina aperta, ela
 	# encolhe junto com os efeitos.
 	ArcadeStage.enfeite = desempenho.qualidade
@@ -805,9 +804,6 @@ func _process(delta: float) -> void:
 	zoom_impacto = lerpf(zoom_impacto, zoom_alvo, clampf(passo * 7.0, 0.0, 1.0))
 	if absf(zoom_impacto - 1.0) < 0.002 and is_equal_approx(zoom_alvo, 1.0):
 		zoom_impacto = 1.0
-	animation_time += passo
-	state_time += passo
-	_poll_serial(passo)
 	fx.atualizar(passo)
 	tremor = maxf(0.0, tremor - passo * 26.0)
 	clarao = maxf(0.0, clarao - passo * 2.6)
@@ -848,6 +844,11 @@ func _process(delta: float) -> void:
 					_entrar_em_resultado()
 			GameDef.State.RESULT:
 				_processar_resultado(passo)
+	# Segunda coleta, barata e sem avançar relógios: pega o HIT que chegou
+	# enquanto câmera/arena eram atualizadas. É especialmente importante
+	# no quadro em que a contagem muda para ARMED; o golpe posterior ao
+	# sino já encontra o estado correto, sem esperar o próximo desenho.
+	_poll_serial(0.0)
 	queue_redraw()
 
 func _processar_abertura(delta: float) -> void:
@@ -917,8 +918,7 @@ func _processar_contagem(delta: float) -> void:
 		var pronta := camera_service != null and camera_service.pronta()
 		# UMA CÂMERA QUE JÁ DESISTIU NÃO MERECE SER ESPERADA DE NOVO.
 		#
-		# Sem isto, uma máquina sem webcam nenhuma — ou com a ponte sem
-		# Python, já desistida — pagava os SEIS SEGUNDOS inteiros de
+		# Sem isto, uma máquina sem webcam nenhuma pagava os SEIS SEGUNDOS inteiros de
 		# `ESPERA_MAXIMA_DA_CAMERA` EM TODA RODADA, para sempre: a
 		# contagem "FAÇA SUA POSE" ficava parada esperando uma imagem
 		# que já se sabia, desde o fim da última tentativa, que não ia
@@ -1126,7 +1126,9 @@ func _fechar_rodada() -> void:
 ## veredito: rearmar ou encerrar. Nada mais muda — mesma animação, mesma
 ## contagem, mesmo som. Um caminho só é o que faz a máquina ser previsível
 ## e o que impede um dos dois socos de ter um defeito que o outro não tem.
-func _entrar_em_resultado() -> void:
+func _entrar_em_resultado(encerrar_rodada := false) -> void:
+	if encerrar_rodada:
+		rodada_encerrada_antecipadamente = true
 	# A nota mostrada é a DESTE soco. A rodada só é fechada — ranking,
 	# estatística, disco — quando o último golpe já foi dado.
 	if socos.is_empty():
@@ -1136,7 +1138,7 @@ func _entrar_em_resultado() -> void:
 		var ultimo: Dictionary = socos[socos.size() - 1]
 		result_score = int(ultimo["pontos"])
 		result_speed = float(ultimo["velocidade"])
-	if socos.size() >= SOCOS_POR_RODADA:
+	if socos.size() >= SOCOS_POR_RODADA or rodada_encerrada_antecipadamente:
 		_fechar_rodada()
 	else:
 		# COLOCAÇÃO NO RANKING SÓ EXISTE NO FIM DA RODADA. Sem zerar aqui,
@@ -1157,7 +1159,10 @@ func _processar_resultado(delta: float) -> void:
 	var avanco := clampf(result_time / GameDef.CONTAGEM_DURACAO, 0.0, 1.0)
 	# O número dispara e vai freando — o suspense que um placar de
 	# arcade precisa ter. O veredito só entra quando a contagem termina.
-	displayed_score = float(result_score) * ease(avanco, 0.42)
+	# Curva cúbica: ganha velocidade de imediato e assenta suavemente no
+	# valor exato. O jogador vê resposta rápida sem perder a leitura final.
+	var suave := 1.0 - pow(1.0 - avanco, 3.0)
+	displayed_score = float(result_score) * suave
 
 	sons.score_progress(avanco)
 	_mandar_fitas(displayed_score / float(GameDef.SCORE_MAX))
@@ -1171,12 +1176,17 @@ func _processar_resultado(delta: float) -> void:
 			ranking_announced = true
 			sons.play("ranking", -5.0)
 			sons.music(-24.0)
-		_marcar_atos_do_ranking()
+		# Os atos têm deixas diferentes (tabela, assentamento e confete),
+		# portanto precisam ser conferidos a cada quadro. Antes esta função
+		# era chamada só no instante t=0 da revelação: nenhuma deixa futura
+		# chegava a disparar, explicando a festa ausente ou inconsistente.
+		if ranking_announced:
+			_marcar_atos_do_ranking()
 
 	# AINDA HÁ SOCO A DAR? O resultado deste fica à vista o tempo de ser
 	# lido, e a máquina rearma. É o mesmo caminho do último soco até aqui;
 	# só o que vem depois do veredito é diferente.
-	if socos.size() < SOCOS_POR_RODADA:
+	if socos.size() < SOCOS_POR_RODADA and not rodada_encerrada_antecipadamente:
 		if verdict_time >= ESPERA_PARA_O_PROXIMO_SOCO:
 			_armar_proximo_soco()
 		return
@@ -1192,30 +1202,38 @@ func _processar_resultado(delta: float) -> void:
 ## meio segundo antes, que é quando a festa parece solta da tela.
 var _ato_assentou := false
 var _ato_festejou := false
+var _festa_ranking_decorrido := 0.0
+var _festa_ranking_proximo := 0.0
+var _festa_ranking_canhao := 0
 
 func _marcar_atos_do_ranking() -> void:
 	if posicao_no_ranking <= 0:
+		return
+	var celebracao := RankingCelebration.para(posicao_no_ranking)
+	if celebracao.is_empty():
 		return
 	var t := _tempo_do_ranking()
 	# A LINHA BATE NO LUGAR: som seco e um tranco curto na tela.
 	if not _ato_assentou and t >= ATO_ANUNCIO + ATO_TABELA:
 		_ato_assentou = true
 		sons.play("hit", -6.0)
-		tremor = maxf(tremor, 9.0)
+		tremor = maxf(tremor, float(celebracao["tremor"]) * 0.55)
 	# E SÓ ENTÃO O CONFETE. Durante o movimento ele vira sujeira por cima
 	# da informação; depois dele, vira festa.
 	if not _ato_festejou and t >= ATO_ANUNCIO + ATO_TABELA + ATO_ASSENTA:
 		_ato_festejou = true
 		sons.play("record" if posicao_no_ranking == 1 else "win", -3.0)
-		# DE FORA DA TELA, POR CIMA. Confete que nasce dentro da tabela
-		# estoura em cima da informação e lê como sujeira; nascendo acima
-		# da borda, ele DESCE sobre a tela e vira chuva de papel picado,
-		# que é o que uma premiação tem.
-		fx.confete(Vector2(200.0, -60.0), 40, CORES_FESTA, 620.0)
-		fx.confete(Vector2(540.0, -90.0), 40, CORES_FESTA, 620.0)
-		fx.confete(Vector2(880.0, -60.0), 40, CORES_FESTA, 620.0)
+		sons.play(str(celebracao["som"]), float(celebracao["volume"]))
+		sons.duck(10.0, 4.5)
+		# O papel não nasce todo neste quadro. A festa sustentada abaixo
+		# entrega mais confete sem o pico de CPU que congelava a tabela.
+		_festa_ranking_decorrido = 0.0
+		_festa_ranking_proximo = 0.0
+		_festa_ranking_canhao = 0
+		tremor = maxf(tremor, float(celebracao["tremor"]))
 
-func _manter_festa(_delta: float) -> void:
+func _manter_festa(delta: float) -> void:
+	_manter_festa_do_ranking(delta)
 	## A COMEMORAÇÃO QUE CONTINUA é do nível, e o intervalo entre os
 	## estouros também. Um impacto leve tem intervalo zero e não comemora
 	## nada: dizer "mandou bem" a quem não mandou é o jeito mais rápido
@@ -1235,6 +1253,30 @@ func _manter_festa(_delta: float) -> void:
 	# CADA FOGO TEM O SEU ESTOURO. Festa muda no som antes de mudar na
 	# imagem: fogo mudo lê como enfeite de tela, não como comemoração.
 	sons.play("subgrave", -14.0)
+
+func _manter_festa_do_ranking(delta: float) -> void:
+	if not _ato_festejou or posicao_no_ranking <= 0:
+		return
+	var celebracao := RankingCelebration.para(posicao_no_ranking)
+	if celebracao.is_empty():
+		return
+	_festa_ranking_decorrido += delta
+	var duracao := float(celebracao["confete_duracao"])
+	if _festa_ranking_decorrido > duracao:
+		return
+	if _festa_ranking_decorrido >= _festa_ranking_proximo:
+		_festa_ranking_proximo += float(celebracao["confete_intervalo"])
+		var intensidade := float(celebracao["forca"]) / 700.0
+		fx.chuva_de_confete(1080.0, int(celebracao["confete_lote"]), CORES_FESTA, intensidade)
+	var canhoes := int(celebracao["canhoes"])
+	# Canhões alternados, nunca no mesmo quadro: impacto visual maior e
+	# custo distribuído. Campeão ganha centro + dois lados; pódio, lados.
+	var instante_canhao := 0.18 + float(_festa_ranking_canhao) * 0.42
+	if _festa_ranking_canhao < canhoes and _festa_ranking_decorrido >= instante_canhao:
+		var pontos := [Vector2(120.0, 1880.0), Vector2(960.0, 1880.0), Vector2(540.0, 1920.0)]
+		var ordem := [2, 0, 1] if posicao_no_ranking == 1 else [0, 1, 2]
+		fx.confete(pontos[ordem[_festa_ranking_canhao]], 28, CORES_FESTA, float(celebracao["forca"]))
+		_festa_ranking_canhao += 1
 
 # ======================================================================
 # ENTRADA DE COMANDOS
@@ -1426,18 +1468,31 @@ func camera_liberou_a_rodada() -> bool:
 		return false
 	return camera_service.pronta()
 
+func rodada_liberada() -> bool:
+	return _sensor_ligado() and camera_liberou_a_rodada()
+
 ## O que dizer a quem apertou START e a máquina não começou.
 func motivo_da_recusa() -> String:
+	if link == null or not link.is_open() or not placa_respondeu:
+		return "AGUARDE — CONECTANDO O SENSOR"
+	if placa_calibrando:
+		return "PREPARANDO O SENSOR… %d%%" % progresso_calibracao
+	if not sensor_presente:
+		if not mensagem_sensor_publica.is_empty():
+			return mensagem_sensor_publica
+		return "SENSOR DE SOCO INDISPONÍVEL"
+	if ultimo_sinal_ms < 0 or Time.get_ticks_msec() - ultimo_sinal_ms > 2000:
+		return "AGUARDE — CONFIRMANDO O SENSOR"
 	if not camera_enabled:
-		return "CÂMERA DESLIGADA NA CENTRAL"
+		return "CÂMERA DESLIGADA"
 	if camera_service == null:
 		return "CÂMERA INDISPONÍVEL"
 	return camera_service.estado_curto()
 
 func _iniciar_rodada() -> void:
-	# A CÂMERA VEM ANTES DA FICHA, e a ordem importa: recusar depois de
-	# descontar o crédito seria cobrar por uma partida que não aconteceu.
-	if not camera_liberou_a_rodada():
+	# SENSOR E CÂMERA VÊM ANTES DA FICHA. Porta apenas aberta não basta:
+	# START só libera com placa identificada, MPU confirmado e sinal atual.
+	if not rodada_liberada():
 		_show_notice(motivo_da_recusa())
 		sons.play("start_negado", -3.0)
 		return
@@ -1452,6 +1507,7 @@ func _iniciar_rodada() -> void:
 			return
 		credits -= 1
 		credito_gasto = true
+	rodada_encerrada_antecipadamente = false
 	_discard_round_photo()
 	intro_active = false
 	sons.stop("score_loop")
@@ -1480,6 +1536,9 @@ func _iniciar_rodada() -> void:
 	ranking_announced = false
 	_ato_assentou = false
 	_ato_festejou = false
+	_festa_ranking_decorrido = 0.0
+	_festa_ranking_proximo = 0.0
+	_festa_ranking_canhao = 0
 	displayed_score = 0.0
 	fx.limpar()
 	clarao = 1.0
@@ -1497,6 +1556,7 @@ func _iniciar_rodada() -> void:
 	arena_semente = 0
 	if arena != null:
 		arena.preparar()
+		arena.guardar(true)
 	_salvar()
 
 ## DEVOLVE A FICHA DA RODADA QUE NÃO ACONTECEU.
@@ -1593,6 +1653,12 @@ func _registrar_impacto(
 	state = GameDef.State.MEASURING
 	state_time = 0.0
 	var forca := float(result_score) / float(GameDef.SCORE_MAX)
+	# A nota permanece exatamente na curva competitiva calibrada. A reação
+	# física usa a posição REAL do golpe dentro da faixa do sensor; usar a
+	# nota elevada ao expoente aqui comprimía quase todo soco em "fraco".
+	var forca_visual := ScoreCurve.normalized(
+		result_speed, hit_min_speed, hit_max_speed, score_dead_zone
+	)
 	var alvo := _alvo()
 	moldura.impacto(0.4 + forca * 0.6)
 	sons.play("hit", 1.5)
@@ -1630,12 +1696,17 @@ func _registrar_impacto(
 		# tabela: é a mesma linha que decide o soluço da imagem, e não um
 		# segundo critério para a mesma ideia de "golpe que para tudo".
 		var derruba := float(pancada_nivel["hitstop"]) > 0.0
-		var reacao := arena.golpe(forca, derruba)
+		var reacao := arena.golpe(forca_visual, derruba, result_score)
 		arena_nocaute = bool(reacao["nocaute"])
+		if bool(reacao.get("desdenhou", false)):
+			arena_frase = "ELE NEM SENTIU • TENTE MAIS FORTE"
+			sons.play("torcida_desdenho", -1.0)
 	# O BAQUE TEM DUAS CAMADAS AGORA: o couro do impacto e o corpo que
 	# leva. Sem a segunda, o soco continuava soando como saco de areia
 	# mesmo com um lutador na tela levando o golpe.
-	sons.play("arena_corpo", -1.0 + forca * 4.0)
+	sons.play("arena_corpo", -1.0 + forca_visual * 4.0)
+	if result_score >= 6000 and forca_visual >= 0.36 and not arena_nocaute:
+		sons.play("arena_publico", -11.0 + forca_visual * 8.0)
 	if arena_nocaute:
 		arena_frase = ArenaFrases.de_nocaute(arena_semente)
 		sons.play("arena_queda", 0.0)
@@ -1885,7 +1956,7 @@ func _resultado_da_calibracao() -> void:
 # ======================================================================
 func _iniciar_serial(evitar := "") -> void:
 	_soltar_link()
-	link = SerialLink.create_best(evitar)
+	link = SerialLink.create_best(evitar, caminho_serial_conhecido)
 	link.line_received.connect(_on_serial_line)
 	link.opened.connect(_on_serial_opened)
 	link.closed.connect(_on_serial_closed)
@@ -1894,6 +1965,9 @@ func _iniciar_serial(evitar := "") -> void:
 	porta_atual = ""
 	ultimo_sinal_ms = -1
 	placa_respondeu = false
+	sensor_presente = false
+	placa_calibrando = false
+	progresso_calibracao = 0
 	_porta_da_vez = 0
 	_varreduras = 0
 	_falhas_da_porta_fixa = 0
@@ -1944,7 +2018,23 @@ func _soltar_link() -> void:
 ## O sensor está falando com a máquina? Decide o que o cliente vê: com o
 ## Arduino ligado, a tela não mostra tecla nenhuma; na bancada, mostra.
 func _sensor_ligado() -> bool:
-	return link != null and link.is_open() and placa_respondeu
+	if link == null or not link.is_open() or not placa_respondeu or not sensor_presente:
+		return false
+	# STATUS/TELEMETRY chegam quatro vezes por segundo. Dois segundos sem
+	# uma linha já não são conexão pronta para vender uma partida.
+	return ultimo_sinal_ms >= 0 and Time.get_ticks_msec() - ultimo_sinal_ms <= 2000
+
+## DA CONTAGEM AO RESULTADO, A CONEXAO E UMA TRANSACAO UNICA.
+##
+## Descoberta, troca de backend e reabertura com DTR pertencem ao modo de
+## espera. Depois que START aceitou a rodada, a COM ja foi provada e fica
+## congelada ate o resultado acabar. PING e leitura continuam; somente as
+## operacoes que destroem/recriam a sessao ficam adiadas.
+func _sessao_serial_da_rodada() -> bool:
+	return not central_aberta and state in [
+		GameDef.State.COUNTDOWN, GameDef.State.ARMED,
+		GameDef.State.MEASURING, GameDef.State.RESULT,
+	]
 
 ## A PORTA CERTA SE DESCOBRE TENTANDO — não abrindo a primeira da lista.
 ##
@@ -1991,7 +2081,7 @@ func _sensor_ligado() -> bool:
 ## Oito segundos foram escolhidos quando o firmware so se apresentava
 ## DEPOIS de achar e calibrar o sensor -- dois segundos de bootloader mais
 ## dois de calibracao, e margem para um PC lento. Desde a V9 o `READY` sai
-## como PRIMEIRA linha do `setup()`, antes do Wire e antes da calibracao:
+## como PRIMEIRA linha do `setup()`, antes do I2C e antes da calibracao:
 ## a placa se anuncia em pouco mais de dois segundos depois do reset do
 ## DTR, e a partir dai manda PINS quatro vezes por segundo.
 ##
@@ -2001,6 +2091,16 @@ func _sensor_ligado() -> bool:
 ## espetada e falando. Era essa a demora.
 const PORTA_PACIENCIA := 4.5
 const ESPERA_DA_CONFIRMACAO := 15.0
+## Uma ausência curta pode ser o Windows atendendo câmera e vídeo no mesmo
+## controlador USB. Só reiniciamos a COM depois de silêncio realmente
+## prolongado; durante COUNTDOWN/ARMED damos margem ainda maior para não
+## resetar o Arduino exatamente quando o jogador vai socar.
+const SERIAL_SILENCIO_NORMAL_MS := 20000
+const SERIAL_SILENCIO_EM_JOGO_MS := 30000
+## Calibrar e recuperar o barramento nunca deve fazer o jogo abandonar a
+## COM que ja se identificou. O prazo grande e apenas uma rede de seguranca;
+## o firmware V10 tem prazos internos de milissegundos em cada leitura.
+const SERIAL_SILENCIO_CALIBRANDO_MS := 90000
 ## A PACIENCIA CURTA, para porta que o sistema NAO chama de placa.
 ##
 ## Bluetooth, leitor de cartao, porta virtual de impressora: elas ABREM
@@ -2042,10 +2142,17 @@ var _porta_da_vez := 0
 ## cadeado.
 func _fila_de_tentativas() -> PackedStringArray:
 	var fila := PackedStringArray()
+	# Identificada nesta sessao vence qualquer preferencia antiga. Depois
+	# de READY nao ha mais descoberta: esta e a placa que deve ser reaberta.
+	if not porta_arduino_identificada.is_empty():
+		fila.append(porta_arduino_identificada)
 	if not porta_configurada.is_empty():
-		fila.append(porta_configurada)
+		if not fila.has(porta_configurada):
+			fila.append(porta_configurada)
 		if _falhas_da_porta_fixa < FALHAS_ATE_SOLTAR_A_PORTA_FIXA:
 			return fila
+	if not porta_serial_conhecida.is_empty() and not fila.has(porta_serial_conhecida):
+		fila.append(porta_serial_conhecida)
 	for porta in portas_visiveis:
 		if not fila.has(porta):
 			fila.append(porta)
@@ -2078,7 +2185,7 @@ func _fila_de_tentativas() -> PackedStringArray:
 
 ## OS NOMES QUE O SISTEMA USA, mesmo quando ele não os anuncia.
 ##
-## No Windows são COM1 a COM32: acima de COM9 o nome de verdade precisa
+## No Windows são COM1 a COM64: acima de COM9 o nome de verdade precisa
 ## do prefixo `\\.\`, e é o próprio SerialPort do .NET que o põe, então
 ## aqui vai o nome simples. No Linux são os dois nomes que um Arduino
 ## recebe (ttyACM para os que têm USB nativo, ttyUSB para os clones com
@@ -2089,7 +2196,7 @@ func _portas_cegas() -> PackedStringArray:
 	var cegas := PackedStringArray()
 	match OS.get_name():
 		"Windows":
-			for i in range(1, 33):
+			for i in range(1, 65):
 				cegas.append("COM%d" % i)
 		"Linux", "FreeBSD", "NetBSD", "OpenBSD", "BSD":
 			for i in range(0, 8):
@@ -2171,7 +2278,11 @@ func _tentar_conectar() -> void:
 		proximo_ping = animation_time + 1.0
 	else:
 		serial_status = "FALHA AO ABRIR %s" % porta
-		proxima_tentativa = animation_time + 0.8
+		# Nome inventado pela varredura cega costuma recusar na hora; não
+		# se paga quase um segundo por cada uma das 64 possibilidades.
+		var era_conhecida := portas_visiveis.has(porta) \
+			or porta == porta_configurada or porta == porta_serial_conhecida
+		proxima_tentativa = animation_time + (0.8 if era_conhecida else 0.15)
 
 ## QUANTO ESPERAR ESTA PORTA, especificamente.
 ##
@@ -2240,6 +2351,14 @@ func _poll_serial(_delta: float) -> void:
 	# alguém reiniciar o jogo. O código de ressurreição existia, estava
 	# certo, e era inalcançável.
 	link.poll()
+	if _troca_de_caminho_pendente:
+		if _sessao_serial_da_rodada():
+			# A decisao continua pendente e sera cumprida quando a maquina
+			# voltar a abertura. Nao se troca o dono da COM no meio do soco.
+			return
+		_troca_de_caminho_pendente = false
+		_trocar_de_caminho("conexão oscilou %d vezes em dois minutos" % QUEDAS_ATE_TROCAR_CAMINHO)
+		return
 	if not link.available():
 		_sem_caminho_ate_a_placa()
 		return
@@ -2272,8 +2391,27 @@ func _poll_serial(_delta: float) -> void:
 	elif ultimo_sinal_ms >= 0 and animation_time >= proximo_ping:
 		link.send_line("PING")
 		proximo_ping = animation_time + 5.0
-	if ultimo_sinal_ms >= 0 and Time.get_ticks_msec() - ultimo_sinal_ms > 9000:
-		# NOVE SEGUNDOS CALADA NÃO PODIA SER SÓ UM AVISO NA TELA.
+	var limite_silencio := SERIAL_SILENCIO_NORMAL_MS
+	if placa_calibrando:
+		limite_silencio = SERIAL_SILENCIO_CALIBRANDO_MS
+	elif state in [GameDef.State.COUNTDOWN, GameDef.State.ARMED]:
+		limite_silencio = SERIAL_SILENCIO_EM_JOGO_MS
+	var silencio_ms := Time.get_ticks_msec() - ultimo_sinal_ms if ultimo_sinal_ms >= 0 else 0
+	if ultimo_sinal_ms >= 0 and silencio_ms > 6000 and animation_time >= proximo_ping:
+		# Antes de tocar na porta, confirma com pings rápidos. A ponte segue
+		# lendo em paralelo e qualquer resposta cancela naturalmente o prazo.
+		link.send_line("PING")
+		proximo_ping = animation_time + 1.0
+		serial_status = "VERIFICANDO SINAL — %s" % porta_atual
+	if ultimo_sinal_ms >= 0 and silencio_ms > limite_silencio:
+		if _sessao_serial_da_rodada():
+			# Silencio nao autoriza um segundo dono da COM durante a rodada.
+			# Mantemos a sessao, seguimos enviando PING e deixamos o timeout
+			# normal da partida encerrar com seguranca. Na abertura o vigia
+			# podera reabrir a porta, se ainda for necessario.
+			serial_status = "AGUARDANDO RESPOSTA DO SENSOR"
+			return
+		# SILÊNCIO PROLONGADO NÃO PODE SER SÓ UM AVISO NA TELA.
 		#
 		# Antes disto, "SEM RESPOSTA" era só texto: a porta continuava
 		# aberta, o PING continuava saindo a cada cinco segundos, e se o
@@ -2287,9 +2425,9 @@ func _poll_serial(_delta: float) -> void:
 		# Agora o silêncio fecha a porta e entra na MESMA fila de conexão
 		# do início — reabre a mesma porta (ou a próxima, se houver mais
 		# de uma), do zero, com toda a lógica de PORTA_PACIENCIA de novo.
-		# Uma reconexão sozinha custa menos de um segundo e não se nota;
+		# Uma reconexão automática devolve a máquina sem intervenção;
 		# não reconectar nunca é que perde a máquina a noite inteira.
-		serial_status = "SEM RESPOSTA — %s — RECONECTANDO" % porta_atual
+		serial_status = "SEM RESPOSTA HÁ %d s — %s — RECONECTANDO" % [int(silencio_ms / 1000), porta_atual]
 		var recado := serial_status
 		link.close_port()
 		serial_status = recado
@@ -2326,6 +2464,12 @@ func _sem_caminho_ate_a_placa() -> void:
 		if not motivo.is_empty():
 			serial_status += " (%s)" % motivo
 		proxima_tentativa = animation_time + 1.0
+		# Se a DLL nativa existe, uma ponte que nem consegue se apresentar
+		# não pode monopolizar a máquina para sempre. Damos o prazo inteiro
+		# de recuperação e então experimentamos o caminho já disponível.
+		if ClassDB.class_exists(&"GdSerialManager") \
+				and animation_time >= _proxima_escolha_de_caminho:
+			_trocar_de_caminho("a ponte não conseguiu iniciar")
 		return
 	serial_status = "SEM CAMINHO ATÉ O ARDUINO — PROCURANDO OUTRO…"
 	if not motivo.is_empty():
@@ -2354,7 +2498,8 @@ func _vigiar_o_caminho() -> bool:
 	if link.nome_do_caminho() == SerialLink.CAMINHO_PONTE and not ClassDB.class_exists(&"GdSerialManager"):
 		return false
 	if _caminho_provado:
-		# Já entregou linha nesta máquina: é o caminho certo, ponto final.
+		# Já entregou linha nesta máquina: não se troca só por demora. O
+		# disjuntor de quedas ainda pode revogar esta prova.
 		return false
 	if sensor_presente or ultimo_sinal_ms >= 0:
 		# Está trabalhando: o relógio da desconfiança não corre.
@@ -2377,6 +2522,9 @@ func _vigiar_o_caminho() -> bool:
 	return true
 
 func _trocar_de_caminho(motivo: String) -> void:
+	if _sessao_serial_da_rodada():
+		_troca_de_caminho_pendente = true
+		return
 	var anterior := link.nome_do_caminho() if link != null else ""
 	_trocas_de_caminho += 1
 	_iniciar_serial(anterior)
@@ -2385,6 +2533,8 @@ func _trocar_de_caminho(motivo: String) -> void:
 
 func _on_serial_opened(porta: String) -> void:
 	porta_atual = porta
+	placa_calibrando = false
+	progresso_calibracao = 0
 	# A PORTA CONFIRMOU. É daqui que a paciência com a PLACA começa a
 	# contar, e não de quando o jogo pediu. Ver `PORTA_PACIENCIA`.
 	_porta_confirmada = true
@@ -2400,14 +2550,44 @@ func _on_serial_closed(_porta: String) -> void:
 	# ESTAVA falando e caiu ganha o segundo inteiro, porque nesse caso a
 	# pausa é para o driver soltar a porta antes de reabri-la.
 	var estava_falando := ultimo_sinal_ms >= 0
+	if estava_falando:
+		var agora_ms := Time.get_ticks_msec()
+		var recentes: Array[int] = []
+		for instante in _quedas_do_caminho:
+			if agora_ms - instante <= JANELA_DE_QUEDAS_MS:
+				recentes.append(instante)
+		_quedas_do_caminho = recentes
+		_quedas_do_caminho.append(agora_ms)
+		if _quedas_do_caminho.size() >= QUEDAS_ATE_TROCAR_CAMINHO:
+			_caminho_provado = false
+			_troca_de_caminho_pendente = true
+			_quedas_do_caminho.clear()
 	serial_status = "DESCONECTADO"
+	# Se esta porta ja disse READY,PUNCH_MPU6050, o problema nao e
+	# descoberta. Reabre a mesma COM primeiro, sem reiniciar a varredura em
+	# portas que sabemos nao serem a placa.
+	if not _porta.is_empty() and _porta == porta_arduino_identificada:
+		porta_serial_conhecida = _porta
+		_porta_da_vez = 0
 	porta_atual = ""
 	ultimo_sinal_ms = -1
 	_porta_confirmada = false
 	placa_respondeu = false
-	proxima_tentativa = animation_time + (1.0 if estava_falando else 0.35)
+	sensor_presente = false
+	placa_calibrando = false
+	progresso_calibracao = 0
+	proxima_tentativa = animation_time + (1.0 if estava_falando else 0.18)
 	if estava_falando:
 		sons.play("error", -8.0)
+	# Sem sensor não há rodada honesta. Antes do primeiro golpe, devolve a
+	# ficha; entre as duas tentativas, preserva o resultado já conquistado.
+	if not central_aberta and state in [GameDef.State.COUNTDOWN, GameDef.State.ARMED]:
+		if socos.is_empty():
+			_devolver_credito()
+			_entrar_em_abertura()
+		else:
+			_entrar_em_resultado(true)
+		_show_notice("SENSOR DESCONECTADO — RECONECTANDO")
 
 func _on_serial_line(line: String) -> void:
 	var msg := ArduinoProtocol.parse(line)
@@ -2438,6 +2618,23 @@ func _on_serial_line(line: String) -> void:
 	match str(msg["type"]):
 		"READY":
 			serial_status = "CONECTADO %s" % porta_atual
+			if str(msg.get("device", "")).strip_edges().to_upper() == "PUNCH_MPU6050":
+				porta_arduino_identificada = porta_atual
+				placa_calibrando = true
+				progresso_calibracao = 0
+				mensagem_sensor_publica = "MANTENHA O ALVO PARADO"
+				# Grava a COM assim que a PLACA se identifica. Esperar o sensor
+				# terminar de calibrar era o que fazia o jogo esquecer a COM
+				# certa justamente quando ela travava aos 70%.
+				var rota_mudou := false
+				if not porta_atual.is_empty() and porta_serial_conhecida != porta_atual:
+					porta_serial_conhecida = porta_atual
+					rota_mudou = true
+				if link != null and caminho_serial_conhecido != link.nome_do_caminho():
+					caminho_serial_conhecido = link.nome_do_caminho()
+					rota_mudou = true
+				if rota_mudou:
+					_salvar()
 			# PLACA ENCONTRADA NÃO É SENSOR ENCONTRADO.
 			#
 			# O firmware passou a mandar o `READY` ANTES de procurar o
@@ -2458,8 +2655,18 @@ func _on_serial_line(line: String) -> void:
 			if not porta_atual.is_empty() and not serial_status.begins_with("CONECTADO"):
 				serial_status = "CONECTADO %s" % porta_atual
 		"CALIBRATING":
+			placa_calibrando = true
+			progresso_calibracao = int(msg["percent"])
+			mensagem_sensor_publica = "MANTENHA O ALVO PARADO"
 			serial_status = "CALIBRANDO %d%%" % int(msg["percent"])
 		"CALIBRATED":
+			# Só existe calibração concluída se o MPU respondeu e forneceu
+			# amostras; isto também reconhece firmwares V9 anteriores, que
+			# ainda não mandavam OK,MPU no primeiro arranque.
+			placa_calibrando = false
+			progresso_calibracao = 100
+			mensagem_sensor_publica = ""
+			_sensor_apareceu()
 			serial_status = "CONECTADO %s" % porta_atual
 			_show_notice("SENSOR CALIBRADO")
 		"BUTTON":
@@ -2483,6 +2690,10 @@ func _on_serial_line(line: String) -> void:
 		"HIT":
 			_receber_hit(msg)
 		"TELEMETRY":
+			# Esta linha exige uma leitura I2C completa do MPU; portanto é
+			# prova periódica do sensor mesmo quando a porta não resetou e o
+			# OK,MPU inicial já passou.
+			_sensor_apareceu()
 			telemetria = "a=(%.1f, %.1f, %.1f)g  g=(%.0f, %.0f, %.0f)°/s  pico %.1fg" % [
 				msg["accel"].x, msg["accel"].y, msg["accel"].z,
 				msg["gyro"].x, msg["gyro"].y, msg["gyro"].z,
@@ -2490,6 +2701,8 @@ func _on_serial_line(line: String) -> void:
 			]
 		"REJECT":
 			_recusa_da_placa(msg)
+		"NOISE":
+			_sensor_apareceu()
 		"STATUS":
 			sensor_forca = float(msg["force_g"])
 			sensor_gatilho = float(msg["trigger_g"])
@@ -2505,21 +2718,36 @@ func _on_serial_line(line: String) -> void:
 			]
 			_show_notice("SATURAÇÃO NO %s — AUMENTE A FAIXA DO SENSOR" % str(msg["source"]))
 		"OK":
-			# `OK,MPU` é o firmware avisando que o sensor apareceu — no
-			# arranque, ou depois de alguém encaixar de volta um fio do
-			# I2C com a máquina ligada.
+			# OK,MPU prova que o componente respondeu, mas START so e
+			# liberado por CALIBRATED/TELEMETRY. Firmwares antigos podiam
+			# enviar OK mesmo quando a calibracao acabava de falhar.
 			if str(msg.get("detail", "")) == "MPU":
-				_sensor_apareceu()
+				serial_status = "SENSOR ENCONTRADO — PREPARANDO"
 		"ERROR":
-			if str(msg["code"]) == "NO_MPU":
+			if str(msg["code"]) in ["NO_MPU", "MPU_LEITURA"]:
 				# SEM SENSOR A MÁQUINA CONTINUA DE PÉ: botões e crédito
 				# seguem funcionando pela serial; só o soco depende do
 				# MPU-6050. Dizer isso é melhor do que dizer "erro".
 				sensor_presente = false
+				placa_calibrando = false
+				mensagem_sensor_publica = "SENSOR DE SOCO INDISPONÍVEL"
 				serial_status = "PLACA OK, SEM SENSOR — CONFIRA SDA/SCL"
-				_show_notice("SENSOR NÃO ENCONTRADO — CONFIRA O FIO SDA/SCL")
+				_show_notice("SENSOR DE SOCO INDISPONÍVEL")
+			elif str(msg["code"]) == "CALIB_MOVIMENTO":
+				sensor_presente = false
+				placa_calibrando = true
+				progresso_calibracao = 0
+				mensagem_sensor_publica = "MANTENHA O ALVO PARADO"
+				serial_status = "CALIBRAÇÃO INTERROMPIDA POR MOVIMENTO"
+				_show_notice("MANTENHA O ALVO PARADO")
+			elif str(msg["code"]) == "CALIB_LEITURA":
+				sensor_presente = false
+				placa_calibrando = true
+				progresso_calibracao = 0
+				mensagem_sensor_publica = "PREPARANDO O SENSOR — AGUARDE"
+				serial_status = "FALHA DE LEITURA DURANTE A CALIBRAÇÃO"
 			else:
-				_show_notice("ERRO DO FIRMWARE: %s" % str(msg["code"]))
+				_show_notice("NÃO FOI POSSÍVEL PREPARAR O SENSOR")
 			sons.play("error", -8.0)
 
 ## TEMPO MORTO ENTRE DOIS GOLPES ACEITOS, em milissegundos.
@@ -2539,6 +2767,18 @@ func _sensor_apareceu() -> void:
 		return
 	sensor_presente = true
 	serial_status = "CONECTADO %s" % porta_atual
+	# Só guardamos uma rota depois de chegar até o sensor de verdade. Uma
+	# porta Bluetooth que respondeu lixo ou uma placa sem MPU não contamina
+	# a próxima inicialização. O valor é preferência e pode ser abandonado.
+	var mudou := false
+	if not porta_atual.is_empty() and porta_serial_conhecida != porta_atual:
+		porta_serial_conhecida = porta_atual
+		mudou = true
+	if link != null and caminho_serial_conhecido != link.nome_do_caminho():
+		caminho_serial_conhecido = link.nome_do_caminho()
+		mudou = true
+	if mudou:
+		_salvar()
 
 ## A PLACA VIU ALGO E DESCARTOU — E AGORA ISSO APARECE NA TELA.
 ##
@@ -2891,15 +3131,11 @@ func _click_central(p: Vector2) -> void:
 			"SEM CÂMERA A MÁQUINA NÃO JOGA" if camera_obrigatoria
 			else "A MÁQUINA JOGA MESMO SEM CÂMERA"
 		)
-	elif _tocou("forcar_ponte", p):
-		camera_forcar_ponte = not camera_forcar_ponte
-		camera_ponte_escolhida = true
-		camera_service.forcar_ponte = camera_forcar_ponte
-		camera_service.pedir_abertura()
-		_show_notice(
-			"INDO DIRETO PELA PONTE PYTHON" if camera_forcar_ponte
-			else "TENTANDO O CAMINHO NATIVO PRIMEIRO"
-		)
+	elif _tocou("espelhar_camera", p):
+		camera_mirrored = not camera_mirrored
+		camera_service.mirrored = camera_mirrored
+		_salvar()
+		_show_notice("PRÉVIA ESPELHADA" if camera_mirrored else "PRÉVIA SEM ESPELHO")
 	elif _tocou("diagnosticar", p):
 		_examinar_camera(false)
 	elif _tocou("instalar_camera", p):
@@ -2908,7 +3144,7 @@ func _click_central(p: Vector2) -> void:
 		# PROCURAR DE NOVO, e não só religar: `refresh` zera a desistência
 		# e refaz a enumeração inteira. É o botão de quem acabou de
 		# espetar a webcam com o jogo já aberto.
-		camera_service.pedir_abertura()
+		camera_service.procurar_de_novo()
 		_show_notice(camera_service.estado_curto())
 	elif _tocou("trocar_camera", p):
 		camera_service.cycle_camera()
@@ -2930,6 +3166,9 @@ func _click_central(p: Vector2) -> void:
 		if test_path.is_empty():
 			_show_notice(camera_service.status)
 		else:
+			if camera_service.ultima_foto != null:
+				foto_teste_texture = ImageTexture.create_from_image(camera_service.ultima_foto)
+				foto_teste_ate_ms = Time.get_ticks_msec() + 650
 			RankingStore.delete_photo(test_path)
 			_show_notice("CAPTURA DA CÂMERA APROVADA")
 	elif _tocou("zerar", p):
@@ -3096,6 +3335,10 @@ func _carregar() -> void:
 		# converteria tudo outra vez no religar.
 		_converteu_esquema = true
 	porta_configurada = str(data.get("port", porta_configurada))
+	porta_serial_conhecida = str(data.get("serial_last_good_port", porta_serial_conhecida))
+	caminho_serial_conhecido = str(data.get("serial_last_good_backend", caminho_serial_conhecido))
+	if caminho_serial_conhecido not in [SerialLink.CAMINHO_NATIVO, SerialLink.CAMINHO_PONTE]:
+		caminho_serial_conhecido = ""
 	# OS AJUSTES DO SENSOR SÓ VALEM NA ESCALA EM QUE FORAM MEDIDOS.
 	# Ver `ESCALA_DO_SENSOR`. Fora dela, ficam os padrões desta versão.
 	var escala_salva := int(data.get("sensor_escala", 0))
@@ -3126,15 +3369,9 @@ func _carregar() -> void:
 	camera_enabled = bool(data.get("camera_enabled", camera_enabled))
 	camera_obrigatoria = bool(data.get("camera_obrigatoria", camera_obrigatoria))
 	camera_index = int(data.get("camera_index", camera_index))
-	camera_backend = str(data.get("camera_backend", camera_backend))
-	camera_python = str(data.get("camera_python", camera_python))
 	teto_efeitos = str(data.get("teto_efeitos", teto_efeitos))
 	desempenho.teto = teto_efeitos
 	desempenho.aplicar_teto()
-	camera_python_args = str(data.get("camera_python_args", camera_python_args))
-	camera_ponte_escolhida = bool(data.get("camera_ponte_escolhida", false))
-	if camera_ponte_escolhida:
-		camera_forcar_ponte = bool(data.get("camera_forcar_ponte", camera_forcar_ponte))
 	camera_mirrored = bool(data.get("camera_mirrored", camera_mirrored))
 	statistics = StatisticsStore.sanitize(data.get("statistics", {}))
 
@@ -3155,6 +3392,8 @@ func _salvar() -> void:
 		# Mantido para uma eventual volta a uma versão anterior do jogo.
 		"best_score": _melhor(),
 		"port": porta_configurada,
+		"serial_last_good_port": porta_serial_conhecida,
+		"serial_last_good_backend": caminho_serial_conhecido,
 		"hit_min_speed": hit_min_speed,
 		"hit_max_speed": hit_max_speed,
 		"score_exponent": score_exponent,
@@ -3170,12 +3409,7 @@ func _salvar() -> void:
 		"camera_enabled": camera_enabled,
 		"camera_obrigatoria": camera_obrigatoria,
 		"camera_index": camera_index,
-		"camera_backend": camera_backend,
-		"camera_python": camera_python,
 		"teto_efeitos": teto_efeitos,
-		"camera_python_args": camera_python_args,
-		"camera_forcar_ponte": camera_forcar_ponte,
-		"camera_ponte_escolhida": camera_ponte_escolhida,
 		"camera_mirrored": camera_mirrored,
 		"statistics": statistics,
 	})
@@ -3457,7 +3691,7 @@ func _draw_partida() -> void:
 			else:
 				# O MOTIVO DE VERDADE, e não "SEM CÂMERA" para tudo. A
 				# mesma frase servia para câmera desligada na Central,
-				# Python faltando, webcam ocupada e ponte ainda subindo —
+				# privacidade bloqueada, webcam ocupada e dispositivo ausente —
 				# e quem estava na frente da máquina não tinha como saber
 				# qual das quatro era.
 				var recado := "FOTO PRONTA"
@@ -3660,7 +3894,7 @@ func _draw_show_idle() -> void:
 	# aparece quando a rodada pode mesmo começar; até lá, o mesmo cartão
 	# diz o que está faltando, com o anel girando para provar que a
 	# máquina está trabalhando nisso e não travada.
-	var liberado := camera_liberou_a_rodada()
+	var liberado := rodada_liberada()
 	_cartao(
 		Rect2(140, 1560, 800, 112), Color("d9122d") if liberado else Color("3a1b06"),
 		Color(Paleta.AMBAR if liberado else Paleta.CIANO, pulse), chegada, 3.0
@@ -3668,7 +3902,7 @@ func _draw_show_idle() -> void:
 	if liberado:
 		_texto("PRESSIONE START", 1635.0, 46, Color(Color.WHITE, chegada))
 	else:
-		_texto("PREPARANDO A CÂMERA", 1608.0, 34, Color(Paleta.CIANO, chegada))
+		_texto("PREPARANDO O JOGO", 1608.0, 34, Color(Paleta.CIANO, chegada))
 		_texto(motivo_da_recusa(), 1652.0, 18, Color(Color.WHITE, 0.85 * chegada))
 		_carregando(Vector2(880.0, 1616.0), 22.0, Paleta.CIANO)
 	# O LUGAR DO CRÉDITO PISCA quando alguém aperta START sem saldo.
@@ -3684,10 +3918,6 @@ func _draw_show_idle() -> void:
 		"JOGO LIVRE" if game_mode == "free" else "CRÉDITOS  %02d" % credits,
 		1740.0, 26, cor_credito
 	)
-	# CARIMBO DA BUILD. Discreto, mas na tela que fica ligada o dia
-	# inteiro: é ele que responde "atualizei e não mudou nada" sem
-	# ninguém precisar abrir terminal.
-	_texto(Versao.curta(), 1876.0, 15, Color(1, 1, 1, 0.55 * chegada))
 
 func _capitulo_da_marca(alpha: float) -> void:
 	var flutuar := smoothstep(0.5, 1.3, state_time)
@@ -3753,10 +3983,14 @@ func _draw_score_hero() -> void:
 	# (quanto o adversário aguentou) e o trilho dentro da plaqueta (quanto
 	# este soco valeu na escala). Dois instrumentos honestos no lugar de
 	# um redondo que disputava espaço com a cena.
+	var progresso_contagem := clampf(result_time / GameDef.CONTAGEM_DURACAO, 0.0, 1.0)
 	var progresso := 0.0 if measuring else clampf(displayed_score / float(GameDef.SCORE_MAX), 0.0, 1.0)
-	var cor := Paleta.CIANO
+	var cor_final: Color = GameDef.classificar(result_score)["cor_faixa"] as Color
+	# A cor também chega, em vez de saltar no último quadro: ciano de
+	# leitura durante a análise, cor da faixa conforme o valor assenta.
+	var cor := Paleta.CIANO.lerp(cor_final, progresso_contagem * 0.82)
 	if verdict_time >= 0.0:
-		cor = GameDef.classificar(result_score)["cor_faixa"] as Color
+		cor = cor_final
 	_draw_campo_de_forca(ALVO_DO_SOCO, cor, progresso, measuring)
 	_draw_arena()
 
@@ -3767,14 +4001,7 @@ func _draw_score_hero() -> void:
 		"– – – –" if measuring else "%04d" % int(round(displayed_score)),
 		Vector2(540.0, 1296.0), cor if measuring else Color.WHITE, PLACAR_NA_ARENA
 	)
-	# O TRILHO DA FORÇA: o mesmo dado do anel antigo, deitado. Num
-	# retângulo largo ele compara melhor do que comparava em círculo —
-	# meia barra contra barra cheia se vê de longe.
-	var trilho := Rect2(304.0, 1362.0, 472.0, 12.0)
-	draw_rect(trilho, Color("3a141d"))
-	if progresso > 0.0:
-		draw_rect(Rect2(trilho.position, Vector2(trilho.size.x * progresso, trilho.size.y)), cor)
-	_apoio("IMPACTO" if measuring else ("PONTOS" if verdict_time >= 0.0 else "CALCULANDO"), 1404.0, cor)
+	_draw_barra_de_pontuacao(progresso, progresso_contagem, cor, measuring)
 
 	if verdict_time >= 0.0:
 		# O NOME DO NÍVEL VEM ANTES DA COLOCAÇÃO. A pessoa quer saber o
@@ -3793,12 +4020,40 @@ func _draw_score_hero() -> void:
 		if posicao_no_ranking > 0:
 			_apoio("%dº LUGAR NO TOP 20" % posicao_no_ranking, 1800.0, Paleta.AMBAR)
 
+## Barra segmentada de leitura instantânea. Segmentos são mais fáceis de
+## comparar à distância que um retângulo contínuo e não criam partículas,
+## shaders ou nós novos por quadro.
+func _draw_barra_de_pontuacao(valor: float, contagem: float, cor: Color, medindo: bool) -> void:
+	var trilho := Rect2(304.0, 1352.0, 472.0, 26.0)
+	_cartao(trilho.grow(6.0), Color("15070d"), Color(cor, 0.34), 1.0, 2.0)
+	var segmentos := 24
+	var vao := 3.0
+	var largura := (trilho.size.x - vao * float(segmentos - 1)) / float(segmentos)
+	for i in range(segmentos):
+		var caixa := Rect2(trilho.position.x + float(i) * (largura + vao), trilho.position.y, largura, trilho.size.y)
+		var aceso := float(i + 1) / float(segmentos) <= valor
+		var tinta := Color("35131d")
+		if medindo:
+			var scanner := int(animation_time * 22.0) % segmentos
+			var distancia := posmod(i - scanner, segmentos)
+			if distancia <= 4:
+				tinta = Color(Paleta.CIANO, 0.30 + (4.0 - float(distancia)) * 0.14)
+		elif aceso:
+			tinta = cor
+		draw_rect(caixa, tinta)
+	# Um cursor branco curto dá precisão ao ponto que ainda está subindo.
+	if not medindo and valor > 0.0 and valor < 1.0:
+		var cursor_x := trilho.position.x + trilho.size.x * valor
+		draw_rect(Rect2(cursor_x - 2.0, trilho.position.y - 4.0, 4.0, trilho.size.y + 8.0), Color.WHITE)
+	var rotulo := "LENDO SENSOR" if medindo else ("PONTOS CONFIRMADOS" if verdict_time >= 0.0 else "ANALISANDO • %02d%%" % int(contagem * 100.0))
+	_apoio(rotulo, 1412.0, cor)
+
 ## O CARREGANDO: UM ANEL QUE GIRA E UMA FRASE DO QUE ESTÁ ACONTECENDO.
 ##
 ## Toda espera desta máquina era silenciosa. O diagnóstico da câmera podia
-## levar dois minutos instalando o OpenCV e a tela ficava idêntica à de
-## antes de apertar; a ponte podia estar subindo enquanto a tela da pose
-## já mostrava o boneco desenhado, como se não houvesse câmera nenhuma.
+## consultar o Windows e a tela ficava idêntica à de antes de apertar; a
+## câmera podia estar subindo enquanto a tela da pose já mostrava o boneco
+## desenhado, como se não houvesse câmera nenhuma.
 ## Espera sem sinal é indistinguível de defeito — e quem está na frente
 ## do gabinete conclui, sempre, que apertou e não aconteceu nada.
 ##
@@ -4069,7 +4324,8 @@ func _draw_ranking_reveal() -> void:
 	var assenta := clampf((t - anuncio - ATO_TABELA) / ATO_ASSENTA, 0.0, 1.0)
 
 	_texto_arcade("TOP 20", 220.0, 110, Paleta.CIANO, LARGURA_UTIL)
-	var titulo := "%dº LUGAR • VOCÊ ENTROU!" % posicao_no_ranking if entrou else "TENTE SUPERAR ESSAS MARCAS"
+	var celebracao := RankingCelebration.para(posicao_no_ranking)
+	var titulo := str(celebracao.get("subtitulo", "%dº LUGAR • VOCÊ ENTROU!" % posicao_no_ranking)) if entrou else "TENTE SUPERAR ESSAS MARCAS"
 	_texto_cabendo(titulo, 312.0, 38, Paleta.AMBAR, LARGURA_UTIL)
 
 	var position_index := maxi(posicao_no_ranking - 1, 0)
@@ -4094,7 +4350,7 @@ func _draw_ranking_reveal() -> void:
 			# de 260 px ela cruzava DUAS linhas no caminho, e cruzar
 			# linha lê como defeito de desenho, não como chegada. De 150
 			# ela desce da vizinhança do próprio lugar.
-			descida = (1.0 - _passo_com_batida(assenta)) * 150.0
+			descida = (1.0 - _passo_com_batida(assenta)) * float(celebracao.get("queda", 150.0))
 			y -= descida
 		# O RECORTE VEM DEPOIS DA QUEDA, e não antes: era por conferir a
 		# altura antes de aplicar o deslocamento que a linha escapava da
@@ -4164,30 +4420,49 @@ func _passo_com_batida(t: float) -> float:
 ## mais. A tabela vem depois: notícia primeiro, contexto depois. Um
 ## anúncio dividindo a tela com vinte linhas de tabela não é um anúncio.
 func _ranking_anuncio(t: float) -> void:
-	var centro := Vector2(540.0, 820.0)
+	var centro := Vector2(540.0, 810.0)
+	var celebracao := RankingCelebration.para(posicao_no_ranking)
 	var abre := clampf(t * 2.2, 0.0, 1.0)
 	var escala := _passo_com_batida(abre)
-	var raio := 300.0 * escala
+	if posicao_no_ranking == 1:
+		escala *= 1.0 + sin(t * PI * 5.0) * (1.0 - abre) * 0.06
+	var raio := float(celebracao.get("raio_selo", 280.0)) * escala
+	var cor_selo: Color = celebracao.get("cor", Paleta.AMBAR)
 
 	# Raios de luz saindo do selo, girando devagar.
-	for i in range(18):
-		var ang := float(i) * TAU / 18.0 + animation_time * 0.5
+	var quantidade_raios := int(celebracao.get("raios", 12))
+	for i in range(quantidade_raios):
+		var ang := float(i) * TAU / float(quantidade_raios) + animation_time * (0.75 if posicao_no_ranking == 1 else 0.38)
 		var perto := raio * 1.12
 		draw_line(
 			centro + Vector2.from_angle(ang) * perto,
 			centro + Vector2.from_angle(ang) * (perto + lerpf(30.0, 160.0, abre)),
-			Color(Paleta.AMBAR, 0.30 * abre), 7.0, true
+			Color(cor_selo, 0.30 * abre), 7.0 if posicao_no_ranking <= 3 else 4.0, true
 		)
 	draw_circle(centro, raio, Color(Paleta.VERMELHO, 0.9), true, -1.0, true)
-	Traco.arco(self, centro, raio, Paleta.AMBAR, 9.0)
-	Traco.arco(self, centro, raio * 0.86, Color(Paleta.CREME, 0.45), 3.0)
+	Traco.arco(self, centro, raio, cor_selo, 11.0 if posicao_no_ranking == 1 else 7.0)
+	var aneis := int(celebracao.get("aneis", 1))
+	for anel in range(aneis):
+		var proporcao := 0.86 - float(anel) * 0.075
+		Traco.arco(self, centro, raio * proporcao, Color(Paleta.CREME, 0.42 - float(anel) * 0.09), 3.0)
+	# Medalhas em órbita tornam a classe da comemoração visível sem
+	# depender do texto: campeão tem três, pódio duas, Top 10 uma.
+	var emblemas := int(celebracao.get("emblemas", 0))
+	for i in range(emblemas):
+		var angulo := animation_time * float(celebracao.get("giro", 0.4)) + float(i) * TAU / float(emblemas)
+		var ponto := centro + Vector2.from_angle(angulo) * raio * 1.04
+		Icones.estrela(self, ponto, 22.0 if posicao_no_ranking == 1 else 17.0, cor_selo)
 
-	Icones.estrela(self, centro + Vector2(0.0, -raio * 0.44), raio * 0.20, Paleta.AMBAR)
-	_texto_arcade("VOCÊ ENTROU", centro.y - raio * 0.02, 74, Paleta.CREME, 620.0, 230.0)
-	_texto_arcade("NO TOP 20", centro.y + raio * 0.24, 62, Paleta.AMBAR, 620.0, 230.0)
-	# O NÚMERO DA POSIÇÃO É A INFORMAÇÃO, e por isso ele é o maior
-	# elemento do selo — não a frase.
-	_texto_arcade("%dº" % posicao_no_ranking, centro.y + raio * 0.86, 132, Paleta.CREME, LARGURA_UTIL)
+	Icones.estrela(self, centro + Vector2(0.0, -raio * 0.57), raio * (0.18 if posicao_no_ranking == 1 else 0.145), cor_selo)
+	# Todos os textos usam uma caixa centrada no próprio selo. Antes a
+	# caixa começava em x=230 e terminava fora da tela; por isso palavras
+	# escapavam do círculo e a composição parecia desmontada.
+	var texto_largura := raio * 1.52
+	var texto_x := centro.x - texto_largura * 0.5
+	_texto_arcade(str(celebracao.get("titulo", "VOCÊ ENTROU")), centro.y - raio * 0.20, 62, Paleta.CREME, texto_largura, texto_x)
+	# O número ocupa o centro óptico e não a borda inferior.
+	_texto_arcade("%dº" % posicao_no_ranking, centro.y + raio * 0.25, 126, Paleta.CREME, texto_largura, texto_x)
+	_texto_arcade(str(celebracao.get("subtitulo", "NO TOP 20")), centro.y + raio * 0.56, 43, cor_selo, texto_largura, texto_x)
 
 # ---------------------------------------------------------------- central
 const CENTRAL_FUNDO := Color("2b0a13")
@@ -4227,12 +4502,8 @@ func _draw_central() -> void:
 
 	_botao(BOTOES_SIMPLES["padroes"], "RESTAURAR PADRÕES", false, Paleta.AMBAR, 19)
 	_botao(BOTOES_SIMPLES["salvar"], "SALVAR E FECHAR", true, Paleta.VERDE, 21)
-	# Uma linha só: entre a última fileira de botões e a borda do painel
-	# sobram poucos pixels, e duas linhas aí se atropelam. O carimbo da
-	# build entra junto porque quem abre a Central é justamente quem
-	# acabou de instalar a atualização e precisa confirmar que pegou.
 	_texto(
-		"%s     Tecla T: golpe de teste  •  Roda/setas: rola a página" % Versao.curta(),
+		"Tecla T: testar sensor  •  Roda/setas: rolar a página",
 		1872.0, 14, Paleta.TINTA_LEVE
 	)
 
@@ -4291,6 +4562,21 @@ func _central_operacao() -> void:
 	)
 	_ficha_do_botao(botao_start, "START", Rect2(110, 706, 400, 150), contador_start)
 	_ficha_do_botao(botao_credito, "CRÉDITO", Rect2(570, 706, 400, 150), contador_credito)
+
+	_secao(Rect2(80, 920, 920, 225), "PERSONAGEM DA ARENA", Paleta.VERDE)
+	var avancado := arena != null and arena.modelo_avancado()
+	_texto(
+		"HUMANOIDE BLENDER • TEXTURA CARTOON" if avancado else "MODELO LEVE ATIVO",
+		1000.0, 24, Paleta.VERDE if avancado else Paleta.AMBAR
+	)
+	_texto(
+		"Pronto para o salão" if avancado else "Execute GERAR_PERSONAGEM.bat e reabra o Godot",
+		1045.0, 17, Paleta.CREME
+	)
+	_texto(
+		"Este indicador confirma qual arquivo foi realmente importado pelo jogo.",
+		1086.0, 14, Paleta.TINTA_FRACA
+	)
 
 	_secao(Rect2(80, 1170, 920, 130), "SALDO", Paleta.AMBAR)
 	_texto(
@@ -4406,9 +4692,9 @@ func _central_camera() -> void:
 	_botao(BOTOES_SIMPLES["trocar_camera"], "TROCAR CÂMERA", false, Paleta.CIANO, 16)
 	_botao(BOTOES_SIMPLES["foto_teste"], "TESTAR FOTO", false, Paleta.ROSA, 16)
 	_botao(
-		BOTOES_SIMPLES["forcar_ponte"],
-		"PONTE FORÇADA" if camera_forcar_ponte else "USAR PONTE",
-		camera_forcar_ponte, Paleta.VERDE, 15
+		BOTOES_SIMPLES["espelhar_camera"],
+		"ESPELHO: SIM" if camera_mirrored else "ESPELHO: NÃO",
+		camera_mirrored, Paleta.VERDE, 15
 	)
 	_botao(BOTOES_SIMPLES["sondar_camera"], "PROCURAR DE NOVO", false, Paleta.CIANO, 15)
 	# A REGRA QUE DECIDE SE A MÁQUINA JOGA SEM WEBCAM — ver
@@ -4430,6 +4716,8 @@ func _central_camera() -> void:
 			"EXAMINANDO — A CÂMERA VOLTA NO FIM", previa.end.y + 34.0, 17,
 			Paleta.CIANO, HORIZONTAL_ALIGNMENT_CENTER, previa.position.x - 100.0, previa.size.x + 200.0
 		)
+	elif foto_teste_texture != null and Time.get_ticks_msec() < foto_teste_ate_ms:
+		_draw_texture_cover(foto_teste_texture, previa, 1.0, camera_mirrored)
 	elif camera_service != null and camera_service.tem_imagem():
 		_draw_texture_cover(camera_service.preview_texture(), previa, 1.0, camera_mirrored)
 	else:
@@ -4441,18 +4729,11 @@ func _central_camera() -> void:
 			camera_service.ficha_da_ponte(), 806.0, 16, Paleta.CIANO,
 			HORIZONTAL_ALIGNMENT_LEFT, 120.0, 860.0
 		)
-	var religadas := camera_service.reinicios_da_ponte() if camera_service != null else 0
-	if religadas > 0:
-		_texto(
-			"ponte religada %d × nesta sessão — se for muito, troque o cabo ou a porta USB" % religadas,
-			830.0, 14, Paleta.AMBAR
-		)
-
 	# ---- o relatório, na tela, e não numa janela que abre atrás do jogo
 	_secao(Rect2(80, 866, 920, 420), "DIAGNÓSTICO DA CÂMERA", Paleta.AMBAR)
 	var ocupado := medico != null and medico.rodando
 	_botao(BOTOES_SIMPLES["diagnosticar"], "AGUARDE…" if ocupado else "DIAGNOSTICAR", ocupado, Paleta.CIANO, 18)
-	_botao(BOTOES_SIMPLES["instalar_camera"], "RESOLVER TUDO", false, Paleta.VERDE, 18)
+	_botao(BOTOES_SIMPLES["instalar_camera"], "RESOLVER ACESSO", false, Paleta.VERDE, 18)
 	if ocupado:
 		# O exame roda numa linha à parte e pode levar dois minutos. Sem
 		# este anel, os dois minutos são indistinguíveis de um botão que
@@ -4460,15 +4741,15 @@ func _central_camera() -> void:
 		_carregando(Vector2(540.0, 1010.0), 26.0, Paleta.CIANO)
 	if medico == null or medico.linhas.is_empty():
 		_texto(
-			"O jogo NÃO precisa de Python: ele tenta a câmera pelo caminho nativo primeiro.",
+			"Captura nativa do Windows por Media Foundation — sem Python e sem OpenCV.",
 			1006.0, 15, Paleta.CIANO
 		)
 		_texto(
-			"Só se esse caminho falhar é que a ponte entra — e é ela que pede Python e OpenCV.",
+			"Conecte a câmera USB: o jogo reconhece, mantém o vídeo ao vivo e só congela a foto.",
 			1030.0, 15, Paleta.TINTA_FRACA
 		)
 		_texto(
-			"DIAGNOSTICAR só olha. RESOLVER TUDO instala o que faltar e libera a privacidade.",
+			"DIAGNOSTICAR só consulta. RESOLVER ACESSO libera a privacidade do usuário.",
 			1054.0, 15, Paleta.TINTA_FRACA
 		)
 	else:
@@ -4569,9 +4850,14 @@ func _central_dados() -> void:
 	# respondeu" deixaram de ser a mesma coisa quando o firmware parou de
 	# travar sem sensor — e é justamente essa separação que diz ao técnico
 	# se ele deve olhar o cabo USB ou os fios do I2C.
+	var sensor_online := _sensor_ligado()
 	_texto(
-		"sensor MPU-6050: %s" % ("presente" if sensor_presente else "NÃO ENCONTRADO — confira SDA=A4, SCL=A5, VCC e GND"),
-		888.0, 17, Paleta.VERDE if sensor_presente else Paleta.AMBAR,
+		"sensor MPU-6050: %s" % (
+			"PRONTO — sinal atual" if sensor_online
+			else ("SEM SINAL RECENTE — reconectando" if sensor_presente
+			else "NÃO ENCONTRADO — confira SDA=A4, SCL=A5, VCC e GND")
+		),
+		888.0, 17, Paleta.VERDE if sensor_online else Paleta.AMBAR,
 		HORIZONTAL_ALIGNMENT_LEFT, 120.0, 860.0
 	)
 	# A TERCEIRA PERGUNTA, QUE FALTAVA: O SENSOR ESTÁ PRONTO PARA ACEITAR?
@@ -4783,13 +5069,9 @@ func _socorro_da_camera(delta: float) -> void:
 func _examinar_camera(resolver: bool) -> void:
 	if medico == null or medico.rodando:
 		return
-	# A PONTE SAI DO AR ANTES DA SONDAGEM. Os dois disputando a webcam é
-	# o que fazia a imagem piscar na Central: um abre, o outro perde, o
-	# vigia religa, e assim sem parar.
-	camera_service.pedir_exame()
-	medico.diagnosticar(
-		resolver, camera_service.caminho_da_ponte(), camera_service.caminho_do_inspetor()
-	)
+	# A consulta PowerShell não abre o fluxo de vídeo; a prévia permanece
+	# ligada durante o diagnóstico e não há disputa pelo dispositivo.
+	medico.diagnosticar(resolver, "", camera_service.caminho_do_inspetor())
 	_show_notice("EXAMINANDO — A RESPOSTA APARECE NA TELA")
 
 ## Terminado o exame, a máquina AGE com o que descobriu: se achou câmera
@@ -4797,43 +5079,17 @@ func _examinar_camera(resolver: bool) -> void:
 ## exige o técnico repetir à mão o que a máquina acabou de descobrir é
 ## meio relatório.
 func _fim_do_exame() -> void:
-	# O INTERPRETADOR VALE MESMO SEM ÍNDICE. Se o exame confirmou um
-	# Python com OpenCV, guardá-lo já conserta a próxima tentativa da
-	# ponte — mesmo que a câmera estivesse ocupada no instante da sonda.
-	if not medico.python.is_empty() and medico.tem_opencv:
-		camera_python = medico.python
-		camera_python_args = ",".join(medico.python_args)
-		camera_service.adotar_python(medico.python, medico.python_args)
-		_salvar()
 	if medico.indices.is_empty():
-		# Sem índice, a ponte volta ao ar mesmo assim: ela varre os
-		# índices sozinha, e a webcam pode ter estado ocupada só no
-		# instante da sondagem.
-		camera_service.terminar_exame()
 		if camera_enabled and not medico.linhas.is_empty():
 			_show_notice(str(medico.linhas[medico.linhas.size() - 1]))
 		return
 	camera_index = int(medico.indices[0])
 	camera_service.selected_index = camera_index
-	# O BACK-END TAMBÉM É DESCOBERTA, e também vale guardar. Sem ele a
-	# ponte refaz a fila DirectShow → Media Foundation → qualquer um a
-	# cada religada, e cada tentativa frustrada custa segundos no Windows
-	# — segundos que caem justamente na hora de tirar a foto.
-	camera_backend = medico.backend
-	camera_service.backend_preferido = camera_backend
-	# O INTERPRETADOR PROVADO. É a peça que faltava: o exame achava tudo
-	# certo e o jogo continuava subindo a ponte com outro Python.
-	camera_python = medico.python
-	camera_python_args = ",".join(medico.python_args)
-	camera_service.adotar_python(medico.python, medico.python_args)
 	camera_enabled = true
 	camera_service.enabled = true
-	camera_service.terminar_exame()
+	camera_service.procurar_de_novo()
 	_salvar()
-	_show_notice("CÂMERA NO ÍNDICE %d%s — RELIGANDO" % [
-		camera_service.selected_index,
-		"" if medico.backend.is_empty() else " VIA " + medico.backend,
-	])
+	_show_notice("CÂMERA %d — MEDIA FOUNDATION ATIVA" % camera_service.selected_index)
 
 ## As cinco marcas em uma linha só: o técnico precisa VER o que vai
 ## apagar antes de apertar ZERAR RANKING.

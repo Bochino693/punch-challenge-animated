@@ -35,6 +35,8 @@ func _initialize() -> void:
 	_test_a_janela_tem_a_proporcao_do_buraco()
 	_test_as_barras_cabem_na_moldura()
 	_test_o_dano_soma_e_nao_passa_de_um()
+	_test_cada_forca_tem_reacao_propria()
+	_test_desdenho_usa_a_nota_e_respeita_a_lona()
 	_test_o_nocaute_nao_afunda_o_lutador()
 	_test_levantar_devolve_o_lutador_para_cima_da_lona()
 	_test_as_frases_cobrem_todos_os_niveis()
@@ -57,16 +59,9 @@ func _test_o_glb_existe_e_tem_contrato_humanoide() -> void:
 	var corpo := cena.instantiate()
 	var controle := Lutador3D.new()
 	controle.montar(corpo as Node3D)
-	if controle.tem_esqueleto():
-		var animacoes := controle.animacoes_disponiveis()
-		for nome in Lutador3D.ALIASES:
-			_ok(nome in animacoes, "o GLB rigado precisa da animação %s" % nome)
-	else:
-		# O checkout ainda pode conter o asset legado antes de o gerador
-		# Blender ser executado. O jogo continua abrindo, mas a ferramenta
-		# definitiva precisa estar presente para a instalação local.
-		_ok(FileAccess.file_exists("res://tools/gerar_personagem_blender.py"),
-			"asset legado exige o gerador humanoide")
+	var animacoes := controle.animacoes_disponiveis()
+	for nome in Lutador3D.ALIASES:
+		_ok(nome in animacoes, "o GLB precisa da animação %s" % nome)
 	controle.free()
 
 # -------------------------------------------------------------- moldura
@@ -112,6 +107,29 @@ func _test_o_dano_soma_e_nao_passa_de_um() -> void:
 	l.preparar()
 	l.bater(0.005)
 	_ok(l.dano == 0.0, "golpe abaixo do mínimo não marca dano")
+	l.free()
+
+func _test_cada_forca_tem_reacao_propria() -> void:
+	var casos := {
+		0.05: "taunt_weak", 0.20: "hit_light", 0.45: "hit_medium",
+		0.68: "hit_heavy", 0.90: "stagger",
+	}
+	for forca in casos:
+		_ok(Lutador3D.reacao_para_forca(forca) == casos[forca],
+			"força %.2f precisa tocar %s" % [forca, casos[forca]])
+
+func _test_desdenho_usa_a_nota_e_respeita_a_lona() -> void:
+	_ok(Lutador3D.reacao_para_pontos(5999, 0.72) == "taunt_weak",
+		"abaixo de 6.000 o adversário precisa desdenhar mesmo com força física")
+	_ok(Lutador3D.reacao_para_pontos(6000, 0.72) == "hit_heavy",
+		"6.000 já usa a reação física normal")
+	_ok(Lutador3D.reacao_para_pontos(6000, 0.02) == "hit_light",
+		"a partir de 6.000 o adversário não pode desdenhar")
+	var l := _lutador()
+	var ko := l.bater(1.0, true, 9500)
+	_ok(bool(ko["nocaute"]), "golpe forte precisa derrubar")
+	var no_chao := l.bater(0.10, false, 2000)
+	_ok(not bool(no_chao["desdenhou"]), "quem está na lona não pode desdenhar")
 	l.free()
 
 func _test_o_nocaute_nao_afunda_o_lutador() -> void:
@@ -167,7 +185,11 @@ func _test_a_frase_nao_troca_sozinha() -> void:
 # --------------------------------------------------------------- som
 func _test_os_sons_da_arena_existem() -> void:
 	const Catalogo = preload("res://scripts/audio/audio_catalog.gd")
-	for cue in ["arena_corpo", "arena_queda", "arena_publico"]:
+	for cue in [
+		"arena_corpo", "arena_queda", "arena_publico",
+		"torcida_desdenho",
+		"torcida_recorde", "torcida_podio", "torcida_top10", "torcida_top20",
+	]:
 		_ok(cue in Catalogo.EXTRA, "%s tem de estar no catálogo" % cue)
 		var caminho: String = Catalogo.path_for(cue)
 		_ok(ResourceLoader.exists(caminho) or FileAccess.file_exists(caminho),
@@ -185,7 +207,7 @@ func _test_a_arena_so_liga_nas_telas_do_soco() -> void:
 	jogo.central_aberta = false
 	var esperado := {
 		GameDef.State.IDLE: false,
-		GameDef.State.COUNTDOWN: false,
+		GameDef.State.COUNTDOWN: true,
 		GameDef.State.ARMED: true,
 		GameDef.State.MEASURING: true,
 		GameDef.State.RESULT: true,

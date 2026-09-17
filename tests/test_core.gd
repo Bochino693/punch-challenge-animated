@@ -11,6 +11,7 @@ func _initialize() -> void:
 	_test_progressao_sensor()
 	_test_migracao_acontece_uma_vez()
 	_test_top20_guarda_vinte_e_a_foto_certa()
+	_test_comemoracoes_do_ranking_sao_diferentes()
 	_test_statistics()
 	_test_calibracao()
 	# ---------------------------------------------- as fitas de LED
@@ -170,6 +171,20 @@ func _test_migracao_acontece_uma_vez() -> void:
 	# E a conversão respeita o teto.
 	var estourado := RankingStore.migrate([{"score": 999}], 0, RankingStore.ESQUEMA_LEGADO)
 	assert(RankingStore.best(estourado) == 9990)
+
+func _test_comemoracoes_do_ranking_sao_diferentes() -> void:
+	var posicoes := [1, 2, 7, 15]
+	var ids := {}
+	var anterior := 10000
+	for posicao in posicoes:
+		var festa := RankingCelebration.para(posicao)
+		assert(not festa.is_empty())
+		assert(not ids.has(festa["id"]))
+		ids[festa["id"]] = true
+		assert(int(festa["confetes"]) < anterior)
+		anterior = int(festa["confetes"])
+		assert(not str(festa["som"]).is_empty())
+	assert(RankingCelebration.para(21).is_empty())
 
 func _test_top20_guarda_vinte_e_a_foto_certa() -> void:
 	var entries: Array[Dictionary] = []
